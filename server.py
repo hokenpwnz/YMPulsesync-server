@@ -1,115 +1,66 @@
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
-
-HOST = "0.0.0.0"
-PORT = 10000
-
-current_track = {
-    "track": None,
-    "status": "stopped"
-}
+```python
+import time
+import requests
 
 
-class Handler(BaseHTTPRequestHandler):
-
-    def send_json(self, data, status=200):
-
-        body = json.dumps(data).encode("utf-8")
-
-        self.send_response(status)
-        self.send_header(
-            "Content-Type",
-            "application/json; charset=utf-8"
-        )
-        self.send_header(
-            "Content-Length",
-            str(len(body))
-        )
-        self.send_header(
-            "Access-Control-Allow-Origin",
-            "*"
-        )
-        self.send_header(
-            "Cache-Control",
-            "no-store"
-        )
-        self.end_headers()
-
-        self.wfile.write(body)
+PULSESYNC_URL = "http://127.0.0.1:2007/get_track"
+RENDER_URL = "https://ympulsesync-server.onrender.com/update"
 
 
-    def do_GET(self):
-
-        if self.path == "/track":
-
-            self.send_json(current_track)
-            return
+session = requests.Session()
 
 
-        self.send_json(
-            {
-                "error": "Not found"
-            },
-            404
-        )
+def get_track():
+    response = session.get(
+        PULSESYNC_URL,
+        timeout=3
+    )
+
+    response.raise_for_status()
+
+    return response.json()
 
 
-    def do_POST(self):
+def send_to_render(data):
+    response = session.post(
+        RENDER_URL,
+        json=data,
+        timeout=10
+    )
 
-        if self.path != "/update":
-            self.send_json(
-                {
-                    "error": "Not found"
-                },
-                404
-            )
-            return
+    response.raise_for_status()
+
+    return response.text
 
 
-        try:
+while True:
 
-            length = int(
-                self.headers.get(
-                    "Content-Length",
-                    0
-                )
+    try:
+
+        data = get_track()
+
+        result = send_to_render(data)
+
+        if data.get("track"):
+            title = data["track"].get("title", "Без названия")
+
+            artists = ", ".join(
+                artist.get("name", "")
+                for artist in data["track"].get("artists", [])
             )
 
-            body = self.rfile.read(length)
-
-            data = json.loads(
-                body.decode("utf-8")
+            print(
+                f"Отправлено: {artists} — {title}"
             )
 
-            current_track["track"] = data.get("track")
-            current_track["status"] = data.get(
-                "status",
-                "stopped"
-            )
+        else:
+            print("Отправлено: ничего не играет")
 
-            self.send_json(
-                {
-                    "ok": True
-                }
-            )
+        print("Render:", result)
 
-        except Exception as error:
+    except Exception as error:
 
-            self.send_json(
-                {
-                    "error": str(error)
-                },
-                400
-            )
+        print("Ошибка:", error)
 
-
-server = ThreadingHTTPServer(
-    (HOST, PORT),
-    Handler
-)
-
-print(
-    f"PulseSync server listening on port {PORT}"
-)
-
-server.serve_forever()
+    time.sleep(2)
+```

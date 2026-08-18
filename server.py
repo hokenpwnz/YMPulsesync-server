@@ -1,4 +1,4 @@
-```python
+python
 import time
 import requests
 
@@ -63,4 +63,3 @@ while True:
         print("Ошибка:", error)
 
     time.sleep(2)
-```

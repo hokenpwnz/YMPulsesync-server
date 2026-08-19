@@ -1,4 +1,3 @@
-```python
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -831,4 +830,3 @@ print(
 
 
 server.serve_forever()
-```

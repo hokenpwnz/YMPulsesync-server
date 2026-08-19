@@ -1,64 +1,146 @@
-import time
-import requests
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+import json
+import os
+
+HOST = "0.0.0.0"
+PORT = int(os.environ.get("PORT", 10000))
+
+current_data = {
+    "track": None,
+    "status": "stopped"
+}
 
 
-PULSESYNC_URL = "http://127.0.0.1:2007/get_track"
-RENDER_URL = "https://ympulsesync-server.onrender.com/update"
+class Handler(BaseHTTPRequestHandler):
 
+    def do_GET(self):
 
-session = requests.Session()
+        global current_data
 
+        parsed = urlparse(self.path)
 
-def get_track():
-    response = session.get(
-        PULSESYNC_URL,
-        timeout=3
-    )
+        # Получить текущий трек
+        if parsed.path == "/track":
 
-    response.raise_for_status()
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "application/json; charset=utf-8"
+            )
+            self.send_header(
+                "Cache-Control",
+                "no-store"
+            )
+            self.send_header(
+                "Access-Control-Allow-Origin",
+                "*"
+            )
+            self.end_headers()
 
-    return response.json()
-
-
-def send_to_render(data):
-    response = session.post(
-        RENDER_URL,
-        json=data,
-        timeout=10
-    )
-
-    response.raise_for_status()
-
-    return response.text
-
-
-while True:
-
-    try:
-
-        data = get_track()
-
-        result = send_to_render(data)
-
-        if data.get("track"):
-            title = data["track"].get("title", "Без названия")
-
-            artists = ", ".join(
-                artist.get("name", "")
-                for artist in data["track"].get("artists", [])
+            self.wfile.write(
+                json.dumps(
+                    current_data,
+                    ensure_ascii=False
+                ).encode("utf-8")
             )
 
-            print(
-                f"Отправлено: {artists} — {title}"
-            )
+            return
 
-        else:
-            print("Отправлено: ничего не играет")
+        # Получить данные от agent.py
+        if parsed.path == "/update":
 
-        print("Render:", result)
+            params = parse_qs(parsed.query)
 
-    except Exception as error:
+            try:
 
-        print("Ошибка:", error)
+                artist = params.get(
+                    "artist",
+                    [""]
+                )[0]
 
-    time.sleep(2)
+                title = params.get(
+                    "title",
+                    [""]
+                )[0]
+
+                album_id = params.get(
+                    "album_id",
+                    [""]
+                )[0]
+
+                track_id = params.get(
+                    "track_id",
+                    [""]
+                )[0]
+
+                cover = params.get(
+                    "cover",
+                    [""]
+                )[0]
+
+                status = params.get(
+                    "status",
+                    ["stopped"]
+                )[0]
+
+                if not title:
+
+                    current_data = {
+                        "track": None,
+                        "status": "stopped"
+                    }
+
+                else:
+
+                    current_data = {
+                        "track": {
+                            "artist": artist,
+                            "title": title,
+                            "album_id": album_id,
+                            "track_id": track_id,
+                            "cover": cover
+                        },
+                        "status": status
+                    }
+
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type",
+                    "application/json; charset=utf-8"
+                )
+                self.send_header(
+                    "Access-Control-Allow-Origin",
+                    "*"
+                )
+                self.end_headers()
+
+                self.wfile.write(
+                    b'{"ok":true}'
+                )
+
+            except Exception as error:
+
+                self.send_response(500)
+                self.end_headers()
+
+                self.wfile.write(
+                    str(error).encode("utf-8")
+                )
+
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+
+server = ThreadingHTTPServer(
+    (HOST, PORT),
+    Handler
+)
+
+print(
+    f"PulseSync server started on port {PORT}"
+)
+
+server.serve_forever()

@@ -1,2 +1,2 @@
-yandex-music[ynison]
+yandex-music[ynison]==3.1.0b2
 websocket-client

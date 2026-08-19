@@ -1,17 +1,216 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from urllib.request import Request, urlopen
 import json
 import os
+import threading
+import time
+
+from yandex_music.ynison import simple
+
 
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("PORT", 10000))
+
+YANDEX_TOKEN = os.environ.get("YANDEX_TOKEN")
 
 current_data = {
     "track": None,
     "status": "stopped"
 }
 
+data_lock = threading.Lock()
+
+
+# ==========================================================
+# Получение текущего трека через Ynison
+# ==========================================================
+
+def get_ynison_state():
+
+    if not YANDEX_TOKEN:
+        print("YANDEX_TOKEN не задан")
+        return
+
+    try:
+
+        state = simple.get_state(
+            YANDEX_TOKEN,
+            device_id="pulsesync-render"
+        )
+
+        player_state = state.player_state
+        queue = player_state.player_queue
+        status = player_state.status
+
+        index = queue.current_playable_index
+        playable_list = queue.playable_list
+
+        if (
+            index < 0
+            or index >= len(playable_list)
+        ):
+            print("Ynison: сейчас нет трека")
+
+            with data_lock:
+                current_data = {
+                    "track": None,
+                    "status": "stopped"
+                }
+
+            return
+
+        playable = playable_list[index]
+
+        title = getattr(
+            playable,
+            "title",
+            ""
+        )
+
+        track_id = getattr(
+            playable,
+            "track_id",
+            None
+        )
+
+        if not track_id:
+
+            track_id = getattr(
+                playable,
+                "id",
+                None
+            )
+
+        artists = getattr(
+            playable,
+            "artists",
+            []
+        )
+
+        artist_names = []
+
+        for artist in artists:
+
+            name = getattr(
+                artist,
+                "name",
+                None
+            )
+
+            if name:
+                artist_names.append(name)
+
+        artist = ", ".join(
+            artist_names
+        )
+
+        album_id = ""
+
+        albums = getattr(
+            playable,
+            "albums",
+            []
+        )
+
+        if albums:
+
+            album_id = getattr(
+                albums[0],
+                "id",
+                ""
+            )
+
+        cover = getattr(
+            playable,
+            "cover_uri",
+            ""
+        )
+
+        if not cover:
+
+            cover = getattr(
+                playable,
+                "coverUri",
+                ""
+            )
+
+        if cover:
+
+            cover = cover.replace(
+                "%%",
+                "200x200"
+            )
+
+            if not cover.startswith(
+                "http"
+            ):
+
+                cover = (
+                    "https://"
+                    + cover
+                )
+
+        paused = getattr(
+            status,
+            "paused",
+            False
+        )
+
+        playback_status = (
+            "paused"
+            if paused
+            else "playing"
+        )
+
+        new_data = {
+            "track": {
+                "artist": artist,
+                "title": title,
+                "album_id": str(album_id),
+                "track_id": str(track_id),
+                "cover": cover
+            },
+            "status": playback_status
+        }
+
+        with data_lock:
+            globals()["current_data"] = new_data
+
+        print(
+            "Ynison:",
+            artist,
+            "-",
+            title,
+            "|",
+            playback_status
+        )
+
+    except Exception as error:
+
+        print(
+            "Ynison ERROR:",
+            repr(error)
+        )
+
+
+# ==========================================================
+# Фоновый цикл Ynison
+# ==========================================================
+
+def ynison_loop():
+
+    print("Ynison поток запущен")
+
+    while True:
+
+        get_ynison_state()
+
+        time.sleep(2)
+
+
+# ==========================================================
+# HTTP
+# ==========================================================
 
 class Handler(BaseHTTPRequestHandler):
 
@@ -19,13 +218,19 @@ class Handler(BaseHTTPRequestHandler):
 
         global current_data
 
-        parsed = urlparse(self.path)
+        parsed = urlparse(
+            self.path
+        )
 
-        # ==================================================
-        # Текущий трек
-        # ==================================================
+        # --------------------------------------------------
+        # Получить текущий трек
+        # --------------------------------------------------
 
         if parsed.path == "/track":
+
+            with data_lock:
+
+                response_data = current_data.copy()
 
             self.send_response(200)
 
@@ -48,172 +253,18 @@ class Handler(BaseHTTPRequestHandler):
 
             self.wfile.write(
                 json.dumps(
-                    current_data,
+                    response_data,
                     ensure_ascii=False
                 ).encode("utf-8")
             )
 
             return
 
-
-        # ==================================================
-        # Прокси обложки
-        # ==================================================
-
-        if parsed.path == "/cover":
-
-            print("COVER: запрос получен")
-
-            try:
-
-                track = current_data.get("track")
-
-                if not track:
-                    print("COVER: текущего трека нет")
-
-                    self.send_response(404)
-                    self.end_headers()
-                    return
-
-
-                cover_url = track.get("cover", "")
-
-                print(
-                    "COVER: исходный URL:",
-                    cover_url
-                )
-
-
-                if not cover_url:
-
-                    print(
-                        "COVER: URL обложки отсутствует"
-                    )
-
-                    self.send_response(404)
-                    self.end_headers()
-                    return
-
-
-                # Добавляем протокол
-                if not cover_url.startswith("http://") and not cover_url.startswith("https://"):
-                    cover_url = "https://" + cover_url
-
-
-                # Заменяем шаблон Яндекса
-                if "%%" in cover_url:
-                    cover_url = cover_url.replace(
-                        "%%",
-                        "200x200"
-                    )
-
-
-                print(
-                    "COVER: запрашиваю:",
-                    cover_url
-                )
-
-
-                request = Request(
-                    cover_url,
-                    headers={
-                        "User-Agent": (
-                            "Mozilla/5.0 "
-                            "(Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 "
-                            "(KHTML, like Gecko) "
-                            "Chrome/131.0 Safari/537.36"
-                        ),
-                        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
-                    }
-                )
-
-
-                with urlopen(
-                    request,
-                    timeout=15
-                ) as response:
-
-                    image = response.read()
-
-                    content_type = response.headers.get(
-                        "Content-Type",
-                        "image/jpeg"
-                    )
-
-
-                print(
-                    "COVER: получено байт:",
-                    len(image)
-                )
-
-                print(
-                    "COVER: Content-Type:",
-                    content_type
-                )
-
-
-                self.send_response(200)
-
-                self.send_header(
-                    "Content-Type",
-                    content_type
-                )
-
-                self.send_header(
-                    "Content-Length",
-                    str(len(image))
-                )
-
-                self.send_header(
-                    "Cache-Control",
-                    "no-store"
-                )
-
-                self.send_header(
-                    "Access-Control-Allow-Origin",
-                    "*"
-                )
-
-                self.end_headers()
-
-                self.wfile.write(image)
-
-
-                print(
-                    "COVER: успешно отправлено"
-                )
-
-
-            except Exception as error:
-
-                print(
-                    "COVER ERROR:",
-                    repr(error)
-                )
-
-                self.send_response(500)
-
-                self.send_header(
-                    "Content-Type",
-                    "text/plain; charset=utf-8"
-                )
-
-                self.end_headers()
-
-                self.wfile.write(
-                    (
-                        "Cover error: "
-                        + str(error)
-                    ).encode("utf-8")
-                )
-
-            return
-
-
-        # ==================================================
-        # Обновление данных от agent.py
-        # ==================================================
+        # --------------------------------------------------
+        # Старый agent.py
+        #
+        # Оставляем специально для совместимости.
+        # --------------------------------------------------
 
         if parsed.path == "/update":
 
@@ -253,27 +304,23 @@ class Handler(BaseHTTPRequestHandler):
                     ["stopped"]
                 )[0]
 
+                # Пока агент работает, он имеет приоритет.
+                # Поэтому Ynison не будет ломать текущую систему.
 
-                if not title:
+                if title:
 
-                    current_data = {
-                        "track": None,
-                        "status": "stopped"
-                    }
+                    with data_lock:
 
-                else:
-
-                    current_data = {
-                        "track": {
-                            "artist": artist,
-                            "title": title,
-                            "album_id": album_id,
-                            "track_id": track_id,
-                            "cover": cover
-                        },
-                        "status": status
-                    }
-
+                        current_data = {
+                            "track": {
+                                "artist": artist,
+                                "title": title,
+                                "album_id": album_id,
+                                "track_id": track_id,
+                                "cover": cover
+                            },
+                            "status": status
+                        }
 
                 self.send_response(200)
 
@@ -293,36 +340,42 @@ class Handler(BaseHTTPRequestHandler):
                     b'{"ok":true}'
                 )
 
-
             except Exception as error:
-
-                print(
-                    "UPDATE ERROR:",
-                    repr(error)
-                )
 
                 self.send_response(500)
 
                 self.end_headers()
 
                 self.wfile.write(
-                    str(error).encode("utf-8")
+                    str(error).encode(
+                        "utf-8"
+                    )
                 )
 
             return
-
-
-        # ==================================================
-        # Неизвестный адрес
-        # ==================================================
 
         self.send_response(404)
         self.end_headers()
 
 
-# ==================================================
+# ==========================================================
 # Запуск
-# ==================================================
+# ==========================================================
+
+if YANDEX_TOKEN:
+
+    threading.Thread(
+        target=ynison_loop,
+        daemon=True
+    ).start()
+
+else:
+
+    print(
+        "YANDEX_TOKEN отсутствует — "
+        "Ynison отключён"
+    )
+
 
 server = ThreadingHTTPServer(
     (HOST, PORT),

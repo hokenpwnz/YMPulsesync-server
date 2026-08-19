@@ -1,5 +1,6 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+from urllib.request import Request, urlopen
 import json
 import os
 
@@ -20,22 +21,29 @@ class Handler(BaseHTTPRequestHandler):
 
         parsed = urlparse(self.path)
 
+        # ==================================================
         # Получить текущий трек
+        # ==================================================
+
         if parsed.path == "/track":
 
             self.send_response(200)
+
             self.send_header(
                 "Content-Type",
                 "application/json; charset=utf-8"
             )
+
             self.send_header(
                 "Cache-Control",
                 "no-store"
             )
+
             self.send_header(
                 "Access-Control-Allow-Origin",
                 "*"
             )
+
             self.end_headers()
 
             self.wfile.write(
@@ -47,7 +55,95 @@ class Handler(BaseHTTPRequestHandler):
 
             return
 
+
+        # ==================================================
+        # Получить текущую обложку
+        # ==================================================
+
+        if parsed.path == "/cover":
+
+            try:
+
+                track = current_data.get("track")
+
+                if not track:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+
+
+                cover_url = track.get("cover")
+
+                if not cover_url:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+
+
+                # Если PulseSync передал URL без протокола
+                if not cover_url.startswith("http://") and not cover_url.startswith("https://"):
+                    cover_url = "https://" + cover_url
+
+
+                request = Request(
+                    cover_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0"
+                    }
+                )
+
+
+                with urlopen(
+                    request,
+                    timeout=10
+                ) as response:
+
+                    image = response.read()
+
+                    content_type = response.headers.get(
+                        "Content-Type",
+                        "image/jpeg"
+                    )
+
+
+                self.send_response(200)
+
+                self.send_header(
+                    "Content-Type",
+                    content_type
+                )
+
+                self.send_header(
+                    "Cache-Control",
+                    "no-store"
+                )
+
+                self.send_header(
+                    "Access-Control-Allow-Origin",
+                    "*"
+                )
+
+                self.end_headers()
+
+                self.wfile.write(image)
+
+            except Exception as error:
+
+                print(
+                    "Cover error:",
+                    error
+                )
+
+                self.send_response(500)
+                self.end_headers()
+
+            return
+
+
+        # ==================================================
         # Получить данные от agent.py
+        # ==================================================
+
         if parsed.path == "/update":
 
             params = parse_qs(parsed.query)
@@ -84,6 +180,7 @@ class Handler(BaseHTTPRequestHandler):
                     ["stopped"]
                 )[0]
 
+
                 if not title:
 
                     current_data = {
@@ -104,20 +201,25 @@ class Handler(BaseHTTPRequestHandler):
                         "status": status
                     }
 
+
                 self.send_response(200)
+
                 self.send_header(
                     "Content-Type",
                     "application/json; charset=utf-8"
                 )
+
                 self.send_header(
                     "Access-Control-Allow-Origin",
                     "*"
                 )
+
                 self.end_headers()
 
                 self.wfile.write(
                     b'{"ok":true}'
                 )
+
 
             except Exception as error:
 
@@ -130,9 +232,18 @@ class Handler(BaseHTTPRequestHandler):
 
             return
 
+
+        # ==================================================
+        # Неизвестный адрес
+        # ==================================================
+
         self.send_response(404)
         self.end_headers()
 
+
+# ==================================================
+# Запуск сервера
+# ==================================================
 
 server = ThreadingHTTPServer(
     (HOST, PORT),

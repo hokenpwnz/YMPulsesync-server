@@ -1,3 +1,4 @@
+```python
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 import json
@@ -5,6 +6,7 @@ import os
 import threading
 import time
 
+from yandex_music import Client
 from yandex_music.ynison import simple
 
 
@@ -13,32 +15,121 @@ PORT = int(os.environ.get("PORT", 10000))
 
 YANDEX_TOKEN = os.environ.get("YANDEX_TOKEN")
 
+
 current_data = {
     "track": None,
     "status": "stopped"
-}
-
-debug_data = {
-    "playable": "",
-    "playable_dict": "",
-    "playable_type": "",
-    "error": None
 }
 
 data_lock = threading.Lock()
 
 
 # ==========================================================
-# Получение состояния через Ynison
+# Yandex Music API
+# ==========================================================
+
+client = None
+
+if YANDEX_TOKEN:
+    try:
+        client = Client(YANDEX_TOKEN).init()
+
+        print(
+            "Yandex Music API: OK",
+            flush=True
+        )
+
+    except Exception as error:
+
+        print(
+            "Yandex Music API ERROR:",
+            repr(error),
+            flush=True
+        )
+
+
+# ==========================================================
+# Получение метаданных трека
+# ==========================================================
+
+def get_track_metadata(track_id):
+
+    if not client:
+        return None
+
+    try:
+
+        tracks = client.tracks(
+            [str(track_id)]
+        )
+
+        if not tracks:
+            return None
+
+        track = tracks[0]
+
+        artist_names = []
+
+        for artist in track.artists or []:
+
+            name = getattr(
+                artist,
+                "name",
+                None
+            )
+
+            if name:
+                artist_names.append(name)
+
+        artist = ", ".join(
+            artist_names
+        )
+
+        album_id = ""
+
+        if track.albums:
+
+            album_id = getattr(
+                track.albums[0],
+                "id",
+                ""
+            )
+
+        return {
+            "artist": artist,
+            "title": getattr(
+                track,
+                "title",
+                ""
+            ),
+            "album_id": str(
+                album_id
+            ),
+            "track_id": str(
+                track_id
+            )
+        }
+
+    except Exception as error:
+
+        print(
+            "Metadata ERROR:",
+            repr(error),
+            flush=True
+        )
+
+        return None
+
+
+# ==========================================================
+# Получение состояния Ynison
 # ==========================================================
 
 def get_ynison_state():
 
+    global current_data
+
     if not YANDEX_TOKEN:
-        print(
-            "ERROR: YANDEX_TOKEN не задан",
-            flush=True
-        )
         return
 
     try:
@@ -55,71 +146,40 @@ def get_ynison_state():
         index = queue.current_playable_index
         playable_list = queue.playable_list
 
+
         if (
             index < 0
             or index >= len(playable_list)
         ):
 
             with data_lock:
-                current_data.clear()
-                current_data.update({
+
+                current_data = {
                     "track": None,
                     "status": "stopped"
-                })
-
-            print(
-                "Ynison: сейчас ничего не играет",
-                flush=True
-            )
+                }
 
             return
+
 
         playable = playable_list[index]
 
 
         # ==================================================
-        # Сохраняем диагностическую информацию
+        # Данные непосредственно из Ynison
         # ==================================================
 
-        playable_dict = getattr(
+        track_id = getattr(
             playable,
-            "__dict__",
-            {}
+            "playable_id",
+            ""
         )
 
-        with data_lock:
-
-            debug_data["playable"] = str(
-                playable
-            )
-
-            debug_data["playable_dict"] = str(
-                playable_dict
-            )
-
-            debug_data["playable_type"] = str(
-                type(playable)
-            )
-
-            debug_data["error"] = None
-
-
-        print(
-            "YNISON PLAYABLE:",
-            str(playable),
-            flush=True
+        album_id = getattr(
+            playable,
+            "album_id_optional",
+            ""
         )
-
-        print(
-            "YNISON PLAYABLE DICT:",
-            str(playable_dict),
-            flush=True
-        )
-
-
-        # ==================================================
-        # Название
-        # ==================================================
 
         title = getattr(
             playable,
@@ -127,98 +187,16 @@ def get_ynison_state():
             ""
         )
 
-
-        # ==================================================
-        # Исполнитель
-        # ==================================================
-
-        artist = ""
-
-        artists = getattr(
+        cover = getattr(
             playable,
-            "artists",
-            None
+            "cover_url_optional",
+            ""
         )
-
-        if artists:
-
-            names = []
-
-            for item in artists:
-
-                name = getattr(
-                    item,
-                    "name",
-                    None
-                )
-
-                if name:
-                    names.append(
-                        name
-                    )
-
-            artist = ", ".join(names)
-
-
-        # ==================================================
-        # ID трека
-        # ==================================================
-
-        track_id = getattr(
-            playable,
-            "track_id",
-            None
-        )
-
-        if track_id is None:
-
-            track_id = getattr(
-                playable,
-                "id",
-                None
-            )
-
-
-        # ==================================================
-        # ID альбома
-        # ==================================================
-
-        album_id = ""
-
-        albums = getattr(
-            playable,
-            "albums",
-            None
-        )
-
-        if albums:
-
-            first_album = albums[0]
-
-            album_id = getattr(
-                first_album,
-                "id",
-                ""
-            )
 
 
         # ==================================================
         # Обложка
         # ==================================================
-
-        cover = getattr(
-            playable,
-            "cover_uri",
-            None
-        )
-
-        if not cover:
-
-            cover = getattr(
-                playable,
-                "coverUri",
-                None
-            )
 
         if cover:
 
@@ -240,6 +218,44 @@ def get_ynison_state():
 
 
         # ==================================================
+        # Получаем исполнителя через API
+        # ==================================================
+
+        metadata = get_track_metadata(
+            track_id
+        )
+
+
+        artist = ""
+
+        if metadata:
+
+            artist = metadata.get(
+                "artist",
+                ""
+            )
+
+            # API является источником
+            # истины для album_id/title
+
+            if metadata.get(
+                "album_id"
+            ):
+
+                album_id = metadata[
+                    "album_id"
+                ]
+
+            if metadata.get(
+                "title"
+            ):
+
+                title = metadata[
+                    "title"
+                ]
+
+
+        # ==================================================
         # Статус
         # ==================================================
 
@@ -257,7 +273,7 @@ def get_ynison_state():
 
 
         # ==================================================
-        # Сохраняем результат
+        # Формируем данные
         # ==================================================
 
         new_data = {
@@ -276,7 +292,14 @@ def get_ynison_state():
                     track_id
                 ),
 
-                "cover": cover or ""
+                "cover": cover,
+
+                "url": (
+                    "https://music.yandex.ru/album/"
+                    + str(album_id)
+                    + "/track/"
+                    + str(track_id)
+                )
             },
 
             "status": playback_status
@@ -285,36 +308,23 @@ def get_ynison_state():
 
         with data_lock:
 
-            current_data.clear()
-
-            current_data.update(
-                new_data
-            )
+            current_data = new_data
 
 
         print(
-            "Ynison:",
+            "TRACK:",
             artist or "[без исполнителя]",
             "-",
             title,
-            "|",
-            "album:",
+            "| album:",
             album_id,
-            "|",
-            "track:",
+            "| track:",
             track_id,
             flush=True
         )
 
 
     except Exception as error:
-
-        with data_lock:
-
-            debug_data["error"] = repr(
-                error
-            )
-
 
         print(
             "Ynison ERROR:",
@@ -324,7 +334,7 @@ def get_ynison_state():
 
 
 # ==========================================================
-# Фоновый поток
+# Фоновый Ynison
 # ==========================================================
 
 def ynison_loop():
@@ -345,7 +355,9 @@ def ynison_loop():
 # HTTP
 # ==========================================================
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(
+    BaseHTTPRequestHandler
+):
 
     def log_message(
         self,
@@ -358,6 +370,26 @@ class Handler(BaseHTTPRequestHandler):
             flush=True
         )
 
+
+    # ------------------------------------------------------
+    # Render health check
+    # ------------------------------------------------------
+
+    def do_HEAD(self):
+
+        self.send_response(200)
+
+        self.send_header(
+            "Content-Type",
+            "text/plain"
+        )
+
+        self.end_headers()
+
+
+    # ------------------------------------------------------
+    # GET
+    # ------------------------------------------------------
 
     def do_GET(self):
 
@@ -412,19 +444,27 @@ class Handler(BaseHTTPRequestHandler):
 
 
         # ==================================================
-        # /debug
+        # /cover
         # ==================================================
 
-        if parsed.path == "/debug":
+        if parsed.path == "/cover":
 
             with data_lock:
 
-                response = json.loads(
-                    json.dumps(
-                        debug_data,
-                        ensure_ascii=False
-                    )
+                track = current_data.get(
+                    "track"
                 )
+
+                cover = (
+                    track.get("cover", "")
+                    if track
+                    else ""
+                )
+
+
+            response = {
+                "cover": cover
+            }
 
 
             self.send_response(200)
@@ -457,10 +497,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
         # ==================================================
-        # Всё остальное
+        # 404
         # ==================================================
 
         self.send_response(404)
+
         self.end_headers()
 
 
@@ -481,7 +522,9 @@ print(
 
 print(
     "YANDEX_TOKEN:",
-    "есть" if YANDEX_TOKEN else "НЕТ",
+    "есть"
+    if YANDEX_TOKEN
+    else "НЕТ",
     flush=True
 )
 
@@ -496,7 +539,7 @@ if YANDEX_TOKEN:
 else:
 
     print(
-        "Ynison не запущен: отсутствует YANDEX_TOKEN",
+        "ERROR: YANDEX_TOKEN отсутствует",
         flush=True
     )
 
@@ -509,9 +552,11 @@ server = ThreadingHTTPServer(
     Handler
 )
 
+
 print(
     f"PulseSync server started on port {PORT}",
     flush=True
 )
 
 server.serve_forever()
+```

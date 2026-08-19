@@ -1,4 +1,3 @@
-```python
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 import json
@@ -559,4 +558,3 @@ print(
 )
 
 server.serve_forever()
-```

@@ -19,6 +19,13 @@ current_data = {
     "status": "stopped"
 }
 
+debug_data = {
+    "playable": None,
+    "playable_dict": None,
+    "playable_type": None,
+    "error": None
+}
+
 data_lock = threading.Lock()
 
 
@@ -29,7 +36,12 @@ data_lock = threading.Lock()
 def get_ynison_state():
 
     if not YANDEX_TOKEN:
-        print("ERROR: YANDEX_TOKEN не задан")
+
+        print(
+            "ERROR: YANDEX_TOKEN не задан",
+            flush=True
+        )
+
         return
 
     try:
@@ -51,9 +63,13 @@ def get_ynison_state():
             or index >= len(playable_list)
         ):
 
-            print("Ynison: сейчас нет трека")
+            print(
+                "Ynison: сейчас нет трека",
+                flush=True
+            )
 
             with data_lock:
+
                 globals()["current_data"] = {
                     "track": None,
                     "status": "stopped"
@@ -66,19 +82,42 @@ def get_ynison_state():
 
 
         # ==================================================
-        # ДИАГНОСТИКА
+        # DEBUG
         # ==================================================
 
-        print("YNISON PLAYABLE:")
-        print(playable)
+        playable_dict = getattr(
+            playable,
+            "__dict__",
+            {}
+        )
 
-        print("YNISON PLAYABLE DICT:")
-        print(
-            getattr(
-                playable,
-                "__dict__",
-                {}
+        with data_lock:
+
+            debug_data["playable"] = str(
+                playable
             )
+
+            debug_data["playable_dict"] = str(
+                playable_dict
+            )
+
+            debug_data["playable_type"] = str(
+                type(playable)
+            )
+
+            debug_data["error"] = None
+
+
+        print(
+            "YNISON PLAYABLE:",
+            str(playable),
+            flush=True
+        )
+
+        print(
+            "YNISON PLAYABLE DICT:",
+            str(playable_dict),
+            flush=True
         )
 
 
@@ -133,7 +172,10 @@ def get_ynison_state():
             )
 
             if name:
-                artist_names.append(name)
+
+                artist_names.append(
+                    name
+                )
 
 
         artist = ", ".join(
@@ -180,6 +222,7 @@ def get_ynison_state():
                 ""
             )
 
+
         if cover:
 
             cover = cover.replace(
@@ -215,7 +258,7 @@ def get_ynison_state():
 
 
         # ==================================================
-        # Формируем данные
+        # Данные для Twitch
         # ==================================================
 
         new_data = {
@@ -254,26 +297,36 @@ def get_ynison_state():
             "-",
             title,
             "|",
-            playback_status
+            playback_status,
+            flush=True
         )
 
 
     except Exception as error:
 
+        with data_lock:
+
+            debug_data["error"] = repr(
+                error
+            )
+
+
         print(
             "Ynison ERROR:",
-            repr(error)
+            repr(error),
+            flush=True
         )
 
 
 # ==========================================================
-# Фоновый цикл
+# Фоновый цикл Ynison
 # ==========================================================
 
 def ynison_loop():
 
     print(
-        "Ynison поток запущен"
+        "Ynison поток запущен",
+        flush=True
     )
 
     while True:
@@ -292,218 +345,22 @@ class Handler(
 ):
 
 
-    def do_GET(self):
+    # ------------------------------------------------------
+    # Отключаем лишний стандартный лог для каждого запроса
+    # ------------------------------------------------------
 
-        global current_data
+    def log_message(
+        self,
+        format,
+        *args
+    ):
 
-        parsed = urlparse(
-            self.path
+        print(
+            format % args,
+            flush=True
         )
 
 
-        # ==================================================
-        # /track
-        # ==================================================
+    def do_GET():
 
-        if parsed.path == "/track":
-
-            with data_lock:
-
-                response_data = (
-                    current_data.copy()
-                )
-
-
-            self.send_response(200)
-
-            self.send_header(
-                "Content-Type",
-                "application/json; charset=utf-8"
-            )
-
-            self.send_header(
-                "Cache-Control",
-                "no-store"
-            )
-
-            self.send_header(
-                "Access-Control-Allow-Origin",
-                "*"
-            )
-
-            self.end_headers()
-
-
-            self.wfile.write(
-
-                json.dumps(
-                    response_data,
-                    ensure_ascii=False
-                ).encode(
-                    "utf-8"
-                )
-
-            )
-
-            return
-
-
-        # ==================================================
-        # /update
-        #
-        # Старый endpoint агента.
-        # Оставляем для совместимости.
-        # ==================================================
-
-        if parsed.path == "/update":
-
-            params = parse_qs(
-                parsed.query
-            )
-
-            try:
-
-                artist = params.get(
-                    "artist",
-                    [""]
-                )[0]
-
-                title = params.get(
-                    "title",
-                    [""]
-                )[0]
-
-                album_id = params.get(
-                    "album_id",
-                    [""]
-                )[0]
-
-                track_id = params.get(
-                    "track_id",
-                    [""]
-                )[0]
-
-                cover = params.get(
-                    "cover",
-                    [""]
-                )[0]
-
-                status = params.get(
-                    "status",
-                    ["stopped"]
-                )[0]
-
-
-                if title:
-
-                    with data_lock:
-
-                        current_data = {
-
-                            "track": {
-
-                                "artist": artist,
-
-                                "title": title,
-
-                                "album_id": album_id,
-
-                                "track_id": track_id,
-
-                                "cover": cover
-                            },
-
-                            "status": status
-                        }
-
-
-                self.send_response(200)
-
-                self.send_header(
-                    "Content-Type",
-                    "application/json; charset=utf-8"
-                )
-
-                self.send_header(
-                    "Access-Control-Allow-Origin",
-                    "*"
-                )
-
-                self.end_headers()
-
-
-                self.wfile.write(
-                    b'{"ok":true}'
-                )
-
-
-            except Exception as error:
-
-                self.send_response(500)
-
-                self.end_headers()
-
-                self.wfile.write(
-
-                    str(error).encode(
-                        "utf-8"
-                    )
-
-                )
-
-            return
-
-
-        # ==================================================
-        # Неизвестный URL
-        # ==================================================
-
-        self.send_response(404)
-
-        self.end_headers()
-
-
-# ==========================================================
-# Запуск Ynison
-# ==========================================================
-
-if YANDEX_TOKEN:
-
-    threading.Thread(
-
-        target=ynison_loop,
-
-        daemon=True
-
-    ).start()
-
-else:
-
-    print(
-        "YANDEX_TOKEN отсутствует — "
-        "Ynison отключён"
-    )
-
-
-# ==========================================================
-# Запуск HTTP
-# ==========================================================
-
-server = ThreadingHTTPServer(
-
-    (
-        HOST,
-        PORT
-    ),
-
-    Handler
-)
-
-
-print(
-    f"PulseSync server started "
-    f"on port {PORT}"
-)
-
-
-server.serve_forever()
+        pass

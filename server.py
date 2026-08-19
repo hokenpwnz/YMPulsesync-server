@@ -1,5 +1,8 @@
+```python
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
 import json
 import os
 import threading
@@ -9,11 +12,27 @@ from yandex_music import Client
 from yandex_music.ynison import simple
 
 
+# ==========================================================
+# Настройки
+# ==========================================================
+
 HOST = "0.0.0.0"
-PORT = int(os.environ.get("PORT", 10000))
 
-YANDEX_TOKEN = os.environ.get("YANDEX_TOKEN")
+PORT = int(
+    os.environ.get(
+        "PORT",
+        10000
+    )
+)
 
+YANDEX_TOKEN = os.environ.get(
+    "YANDEX_TOKEN"
+)
+
+
+# ==========================================================
+# Текущее состояние
+# ==========================================================
 
 current_data = {
     "track": None,
@@ -30,8 +49,12 @@ data_lock = threading.Lock()
 client = None
 
 if YANDEX_TOKEN:
+
     try:
-        client = Client(YANDEX_TOKEN).init()
+
+        client = Client(
+            YANDEX_TOKEN
+        ).init()
 
         print(
             "Yandex Music API: OK",
@@ -46,6 +69,13 @@ if YANDEX_TOKEN:
             flush=True
         )
 
+else:
+
+    print(
+        "YANDEX_TOKEN отсутствует",
+        flush=True
+    )
+
 
 # ==========================================================
 # Получение метаданных трека
@@ -56,10 +86,15 @@ def get_track_metadata(track_id):
     if not client:
         return None
 
+    if not track_id:
+        return None
+
     try:
 
         tracks = client.tracks(
-            [str(track_id)]
+            [
+                str(track_id)
+            ]
         )
 
         if not tracks:
@@ -67,9 +102,16 @@ def get_track_metadata(track_id):
 
         track = tracks[0]
 
+
+        # --------------------------------------------------
+        # Исполнитель
+        # --------------------------------------------------
+
         artist_names = []
 
-        for artist in track.artists or []:
+        for artist in (
+            track.artists or []
+        ):
 
             name = getattr(
                 artist,
@@ -78,11 +120,19 @@ def get_track_metadata(track_id):
             )
 
             if name:
-                artist_names.append(name)
+                artist_names.append(
+                    name
+                )
+
 
         artist = ", ".join(
             artist_names
         )
+
+
+        # --------------------------------------------------
+        # Альбом
+        # --------------------------------------------------
 
         album_id = ""
 
@@ -94,20 +144,30 @@ def get_track_metadata(track_id):
                 ""
             )
 
+
+        # --------------------------------------------------
+        # Результат
+        # --------------------------------------------------
+
         return {
+
             "artist": artist,
+
             "title": getattr(
                 track,
                 "title",
                 ""
             ),
+
             "album_id": str(
                 album_id
             ),
+
             "track_id": str(
                 track_id
             )
         }
+
 
     except Exception as error:
 
@@ -138,13 +198,36 @@ def get_ynison_state():
             device_id="pulsesync-render"
         )
 
-        player_state = state.player_state
-        queue = player_state.player_queue
-        status = player_state.status
 
-        index = queue.current_playable_index
-        playable_list = queue.playable_list
+        # --------------------------------------------------
+        # Состояние плеера
+        # --------------------------------------------------
 
+        player_state = (
+            state.player_state
+        )
+
+        queue = (
+            player_state.player_queue
+        )
+
+        status = (
+            player_state.status
+        )
+
+
+        index = (
+            queue.current_playable_index
+        )
+
+        playable_list = (
+            queue.playable_list
+        )
+
+
+        # --------------------------------------------------
+        # Проверяем очередь
+        # --------------------------------------------------
 
         if (
             index < 0
@@ -161,12 +244,14 @@ def get_ynison_state():
             return
 
 
-        playable = playable_list[index]
+        playable = (
+            playable_list[index]
+        )
 
 
-        # ==================================================
-        # Данные непосредственно из Ynison
-        # ==================================================
+        # --------------------------------------------------
+        # Данные Ynison
+        # --------------------------------------------------
 
         track_id = getattr(
             playable,
@@ -193,9 +278,9 @@ def get_ynison_state():
         )
 
 
-        # ==================================================
+        # --------------------------------------------------
         # Обложка
-        # ==================================================
+        # --------------------------------------------------
 
         if cover:
 
@@ -216,9 +301,9 @@ def get_ynison_state():
                 )
 
 
-        # ==================================================
-        # Получаем исполнителя через API
-        # ==================================================
+        # --------------------------------------------------
+        # Метаданные через API
+        # --------------------------------------------------
 
         metadata = get_track_metadata(
             track_id
@@ -227,6 +312,7 @@ def get_ynison_state():
 
         artist = ""
 
+
         if metadata:
 
             artist = metadata.get(
@@ -234,16 +320,6 @@ def get_ynison_state():
                 ""
             )
 
-            # API является источником
-            # истины для album_id/title
-
-            if metadata.get(
-                "album_id"
-            ):
-
-                album_id = metadata[
-                    "album_id"
-                ]
 
             if metadata.get(
                 "title"
@@ -254,15 +330,25 @@ def get_ynison_state():
                 ]
 
 
-        # ==================================================
+            if metadata.get(
+                "album_id"
+            ):
+
+                album_id = metadata[
+                    "album_id"
+                ]
+
+
+        # --------------------------------------------------
         # Статус
-        # ==================================================
+        # --------------------------------------------------
 
         paused = getattr(
             status,
             "paused",
             False
         )
+
 
         playback_status = (
             "paused"
@@ -271,9 +357,26 @@ def get_ynison_state():
         )
 
 
-        # ==================================================
-        # Формируем данные
-        # ==================================================
+        # --------------------------------------------------
+        # URL Яндекс Музыки
+        # --------------------------------------------------
+
+        track_url = ""
+
+
+        if album_id and track_id:
+
+            track_url = (
+                "https://music.yandex.ru/album/"
+                + str(album_id)
+                + "/track/"
+                + str(track_id)
+            )
+
+
+        # --------------------------------------------------
+        # Формируем состояние
+        # --------------------------------------------------
 
         new_data = {
 
@@ -293,17 +396,16 @@ def get_ynison_state():
 
                 "cover": cover,
 
-                "url": (
-                    "https://music.yandex.ru/album/"
-                    + str(album_id)
-                    + "/track/"
-                    + str(track_id)
-                )
+                "url": track_url
             },
 
             "status": playback_status
         }
 
+
+        # --------------------------------------------------
+        # Сохраняем
+        # --------------------------------------------------
 
         with data_lock:
 
@@ -343,20 +445,39 @@ def ynison_loop():
         flush=True
     )
 
+
     while True:
 
-        get_ynison_state()
+        try:
 
-        time.sleep(2)
+            get_ynison_state()
+
+        except Exception as error:
+
+            print(
+                "Ynison LOOP ERROR:",
+                repr(error),
+                flush=True
+            )
+
+
+        time.sleep(
+            2
+        )
 
 
 # ==========================================================
-# HTTP
+# HTTP Handler
 # ==========================================================
 
 class Handler(
     BaseHTTPRequestHandler
 ):
+
+
+    # ------------------------------------------------------
+    # Логи
+    # ------------------------------------------------------
 
     def log_message(
         self,
@@ -371,12 +492,14 @@ class Handler(
 
 
     # ------------------------------------------------------
-    # Render health check
+    # HEAD
     # ------------------------------------------------------
 
     def do_HEAD(self):
 
-        self.send_response(200)
+        self.send_response(
+            200
+        )
 
         self.send_header(
             "Content-Type",
@@ -413,7 +536,9 @@ class Handler(
                 )
 
 
-            self.send_response(200)
+            self.send_response(
+                200
+            )
 
             self.send_header(
                 "Content-Type",
@@ -432,11 +557,14 @@ class Handler(
 
             self.end_headers()
 
+
             self.wfile.write(
                 json.dumps(
                     response,
                     ensure_ascii=False
-                ).encode("utf-8")
+                ).encode(
+                    "utf-8"
+                )
             )
 
             return
@@ -444,52 +572,185 @@ class Handler(
 
         # ==================================================
         # /cover
+        #
+        # Twitch обращается сюда.
+        #
+        # Render сам скачивает картинку
+        # с avatars.yandex.net и отдаёт её Twitch.
         # ==================================================
 
         if parsed.path == "/cover":
 
             with data_lock:
 
-                track = current_data.get(
-                    "track"
-                )
-
-                cover = (
-                    track.get("cover", "")
-                    if track
-                    else ""
+                track = (
+                    current_data.get(
+                        "track"
+                    )
                 )
 
 
-            response = {
-                "cover": cover
-            }
+            if not track:
+
+                self.send_response(
+                    404
+                )
+
+                self.end_headers()
+
+                return
 
 
-            self.send_response(200)
+            cover_url = (
+                track.get(
+                    "cover",
+                    ""
+                )
+            )
+
+
+            if not cover_url:
+
+                self.send_response(
+                    404
+                )
+
+                self.end_headers()
+
+                return
+
+
+            try:
+
+                print(
+                    "Cover proxy:",
+                    cover_url,
+                    flush=True
+                )
+
+
+                request = Request(
+
+                    cover_url,
+
+                    headers={
+                        "User-Agent":
+                            "Mozilla/5.0 "
+                            "(Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 "
+                            "Chrome/151.0 Safari/537.36"
+                    }
+                )
+
+
+                with urlopen(
+                    request,
+                    timeout=10
+                ) as response:
+
+                    image_data = (
+                        response.read()
+                    )
+
+                    content_type = (
+                        response.headers.get(
+                            "Content-Type",
+                            "image/jpeg"
+                        )
+                    )
+
+
+                self.send_response(
+                    200
+                )
+
+                self.send_header(
+                    "Content-Type",
+                    content_type
+                )
+
+                self.send_header(
+                    "Content-Length",
+                    str(
+                        len(image_data)
+                    )
+                )
+
+                self.send_header(
+                    "Cache-Control",
+                    "no-store"
+                )
+
+                self.send_header(
+                    "Access-Control-Allow-Origin",
+                    "*"
+                )
+
+                self.end_headers()
+
+
+                self.wfile.write(
+                    image_data
+                )
+
+
+                print(
+                    "Cover proxy: OK",
+                    len(image_data),
+                    "bytes",
+                    flush=True
+                )
+
+
+            except Exception as error:
+
+                print(
+                    "Cover proxy ERROR:",
+                    repr(error),
+                    flush=True
+                )
+
+
+                self.send_response(
+                    502
+                )
+
+                self.send_header(
+                    "Content-Type",
+                    "text/plain; charset=utf-8"
+                )
+
+                self.end_headers()
+
+
+                self.wfile.write(
+                    b"Cover proxy error"
+                )
+
+
+            return
+
+
+        # ==================================================
+        # /health
+        # ==================================================
+
+        if parsed.path == "/health":
+
+            self.send_response(
+                200
+            )
 
             self.send_header(
                 "Content-Type",
-                "application/json; charset=utf-8"
-            )
-
-            self.send_header(
-                "Cache-Control",
-                "no-store"
-            )
-
-            self.send_header(
-                "Access-Control-Allow-Origin",
-                "*"
+                "text/plain; charset=utf-8"
             )
 
             self.end_headers()
 
+
             self.wfile.write(
-                json.dumps(
-                    response,
-                    ensure_ascii=False
-                ).encode("utf-8")
+                b"OK"
             )
 
             return
@@ -499,7 +760,9 @@ class Handler(
         # 404
         # ==================================================
 
-        self.send_response(404)
+        self.send_response(
+            404
+        )
 
         self.end_headers()
 
@@ -528,6 +791,10 @@ print(
 )
 
 
+# ==========================================================
+# Запускаем Ynison
+# ==========================================================
+
 if YANDEX_TOKEN:
 
     threading.Thread(
@@ -543,6 +810,10 @@ else:
     )
 
 
+# ==========================================================
+# HTTP сервер
+# ==========================================================
+
 server = ThreadingHTTPServer(
     (
         HOST,
@@ -553,8 +824,11 @@ server = ThreadingHTTPServer(
 
 
 print(
-    f"PulseSync server started on port {PORT}",
+    "PulseSync server started on port",
+    PORT,
     flush=True
 )
 
+
 server.serve_forever()
+```

@@ -1,5 +1,5 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 import json
 import os
 import threading
@@ -13,16 +13,15 @@ PORT = int(os.environ.get("PORT", 10000))
 
 YANDEX_TOKEN = os.environ.get("YANDEX_TOKEN")
 
-
 current_data = {
     "track": None,
     "status": "stopped"
 }
 
 debug_data = {
-    "playable": None,
-    "playable_dict": None,
-    "playable_type": None,
+    "playable": "",
+    "playable_dict": "",
+    "playable_type": "",
     "error": None
 }
 
@@ -30,18 +29,16 @@ data_lock = threading.Lock()
 
 
 # ==========================================================
-# Ynison
+# Получение состояния через Ynison
 # ==========================================================
 
 def get_ynison_state():
 
     if not YANDEX_TOKEN:
-
         print(
             "ERROR: YANDEX_TOKEN не задан",
             flush=True
         )
-
         return
 
     try:
@@ -63,26 +60,25 @@ def get_ynison_state():
             or index >= len(playable_list)
         ):
 
+            with data_lock:
+                current_data.clear()
+                current_data.update({
+                    "track": None,
+                    "status": "stopped"
+                })
+
             print(
-                "Ynison: сейчас нет трека",
+                "Ynison: сейчас ничего не играет",
                 flush=True
             )
 
-            with data_lock:
-
-                globals()["current_data"] = {
-                    "track": None,
-                    "status": "stopped"
-                }
-
             return
-
 
         playable = playable_list[index]
 
 
         # ==================================================
-        # DEBUG
+        # Сохраняем диагностическую информацию
         # ==================================================
 
         playable_dict = getattr(
@@ -133,6 +129,38 @@ def get_ynison_state():
 
 
         # ==================================================
+        # Исполнитель
+        # ==================================================
+
+        artist = ""
+
+        artists = getattr(
+            playable,
+            "artists",
+            None
+        )
+
+        if artists:
+
+            names = []
+
+            for item in artists:
+
+                name = getattr(
+                    item,
+                    "name",
+                    None
+                )
+
+                if name:
+                    names.append(
+                        name
+                    )
+
+            artist = ", ".join(names)
+
+
+        # ==================================================
         # ID трека
         # ==================================================
 
@@ -142,7 +170,7 @@ def get_ynison_state():
             None
         )
 
-        if not track_id:
+        if track_id is None:
 
             track_id = getattr(
                 playable,
@@ -152,39 +180,7 @@ def get_ynison_state():
 
 
         # ==================================================
-        # Исполнитель
-        # ==================================================
-
-        artists = getattr(
-            playable,
-            "artists",
-            []
-        )
-
-        artist_names = []
-
-        for artist in artists:
-
-            name = getattr(
-                artist,
-                "name",
-                None
-            )
-
-            if name:
-
-                artist_names.append(
-                    name
-                )
-
-
-        artist = ", ".join(
-            artist_names
-        )
-
-
-        # ==================================================
-        # Альбом
+        # ID альбома
         # ==================================================
 
         album_id = ""
@@ -192,13 +188,15 @@ def get_ynison_state():
         albums = getattr(
             playable,
             "albums",
-            []
+            None
         )
 
         if albums:
 
+            first_album = albums[0]
+
             album_id = getattr(
-                albums[0],
+                first_album,
                 "id",
                 ""
             )
@@ -211,7 +209,7 @@ def get_ynison_state():
         cover = getattr(
             playable,
             "cover_uri",
-            ""
+            None
         )
 
         if not cover:
@@ -219,9 +217,8 @@ def get_ynison_state():
             cover = getattr(
                 playable,
                 "coverUri",
-                ""
+                None
             )
-
 
         if cover:
 
@@ -231,7 +228,9 @@ def get_ynison_state():
             )
 
             if not cover.startswith(
-                "http"
+                "http://"
+            ) and not cover.startswith(
+                "https://"
             ):
 
                 cover = (
@@ -258,7 +257,7 @@ def get_ynison_state():
 
 
         # ==================================================
-        # Данные для Twitch
+        # Сохраняем результат
         # ==================================================
 
         new_data = {
@@ -277,7 +276,7 @@ def get_ynison_state():
                     track_id
                 ),
 
-                "cover": cover
+                "cover": cover or ""
             },
 
             "status": playback_status
@@ -286,18 +285,24 @@ def get_ynison_state():
 
         with data_lock:
 
-            globals()["current_data"] = (
+            current_data.clear()
+
+            current_data.update(
                 new_data
             )
 
 
         print(
             "Ynison:",
-            artist,
+            artist or "[без исполнителя]",
             "-",
             title,
             "|",
-            playback_status,
+            "album:",
+            album_id,
+            "|",
+            "track:",
+            track_id,
             flush=True
         )
 
@@ -319,7 +324,7 @@ def get_ynison_state():
 
 
 # ==========================================================
-# Фоновый цикл Ynison
+# Фоновый поток
 # ==========================================================
 
 def ynison_loop():
@@ -337,17 +342,10 @@ def ynison_loop():
 
 
 # ==========================================================
-# HTTP SERVER
+# HTTP
 # ==========================================================
 
-class Handler(
-    BaseHTTPRequestHandler
-):
-
-
-    # ------------------------------------------------------
-    # Отключаем лишний стандартный лог для каждого запроса
-    # ------------------------------------------------------
+class Handler(BaseHTTPRequestHandler):
 
     def log_message(
         self,
@@ -361,6 +359,159 @@ class Handler(
         )
 
 
-    def do_GET():
+    def do_GET(self):
 
-        pass
+        parsed = urlparse(
+            self.path
+        )
+
+
+        # ==================================================
+        # /track
+        # ==================================================
+
+        if parsed.path == "/track":
+
+            with data_lock:
+
+                response = json.loads(
+                    json.dumps(
+                        current_data,
+                        ensure_ascii=False
+                    )
+                )
+
+
+            self.send_response(200)
+
+            self.send_header(
+                "Content-Type",
+                "application/json; charset=utf-8"
+            )
+
+            self.send_header(
+                "Cache-Control",
+                "no-store"
+            )
+
+            self.send_header(
+                "Access-Control-Allow-Origin",
+                "*"
+            )
+
+            self.end_headers()
+
+            self.wfile.write(
+                json.dumps(
+                    response,
+                    ensure_ascii=False
+                ).encode("utf-8")
+            )
+
+            return
+
+
+        # ==================================================
+        # /debug
+        # ==================================================
+
+        if parsed.path == "/debug":
+
+            with data_lock:
+
+                response = json.loads(
+                    json.dumps(
+                        debug_data,
+                        ensure_ascii=False
+                    )
+                )
+
+
+            self.send_response(200)
+
+            self.send_header(
+                "Content-Type",
+                "application/json; charset=utf-8"
+            )
+
+            self.send_header(
+                "Cache-Control",
+                "no-store"
+            )
+
+            self.send_header(
+                "Access-Control-Allow-Origin",
+                "*"
+            )
+
+            self.end_headers()
+
+            self.wfile.write(
+                json.dumps(
+                    response,
+                    ensure_ascii=False
+                ).encode("utf-8")
+            )
+
+            return
+
+
+        # ==================================================
+        # Всё остальное
+        # ==================================================
+
+        self.send_response(404)
+        self.end_headers()
+
+
+# ==========================================================
+# Запуск
+# ==========================================================
+
+print(
+    "PulseSync server starting...",
+    flush=True
+)
+
+print(
+    "PORT:",
+    PORT,
+    flush=True
+)
+
+print(
+    "YANDEX_TOKEN:",
+    "есть" if YANDEX_TOKEN else "НЕТ",
+    flush=True
+)
+
+
+if YANDEX_TOKEN:
+
+    threading.Thread(
+        target=ynison_loop,
+        daemon=True
+    ).start()
+
+else:
+
+    print(
+        "Ynison не запущен: отсутствует YANDEX_TOKEN",
+        flush=True
+    )
+
+
+server = ThreadingHTTPServer(
+    (
+        HOST,
+        PORT
+    ),
+    Handler
+)
+
+print(
+    f"PulseSync server started on port {PORT}",
+    flush=True
+)
+
+server.serve_forever()

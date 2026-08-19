@@ -60,6 +60,11 @@ def get_ynison_state():
             return
 
         playable = playable_list[index]
+        
+print("YNISON PLAYABLE:")
+print(playable)
+print("YNISON PLAYABLE DICT:")
+print(getattr(playable, "__dict__", {}))
 
         title = getattr(
             playable,

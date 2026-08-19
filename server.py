@@ -22,7 +22,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         # ==================================================
-        # Получить текущий трек
+        # Текущий трек
         # ==================================================
 
         if parsed.path == "/track":
@@ -57,45 +57,81 @@ class Handler(BaseHTTPRequestHandler):
 
 
         # ==================================================
-        # Получить текущую обложку
+        # Прокси обложки
         # ==================================================
 
         if parsed.path == "/cover":
+
+            print("COVER: запрос получен")
 
             try:
 
                 track = current_data.get("track")
 
                 if not track:
+                    print("COVER: текущего трека нет")
+
                     self.send_response(404)
                     self.end_headers()
                     return
 
 
-                cover_url = track.get("cover")
+                cover_url = track.get("cover", "")
+
+                print(
+                    "COVER: исходный URL:",
+                    cover_url
+                )
+
 
                 if not cover_url:
+
+                    print(
+                        "COVER: URL обложки отсутствует"
+                    )
+
                     self.send_response(404)
                     self.end_headers()
                     return
 
 
-                # Если PulseSync передал URL без протокола
+                # Добавляем протокол
                 if not cover_url.startswith("http://") and not cover_url.startswith("https://"):
                     cover_url = "https://" + cover_url
+
+
+                # Заменяем шаблон Яндекса
+                if "%%" in cover_url:
+                    cover_url = cover_url.replace(
+                        "%%",
+                        "200x200"
+                    )
+
+
+                print(
+                    "COVER: запрашиваю:",
+                    cover_url
+                )
 
 
                 request = Request(
                     cover_url,
                     headers={
-                        "User-Agent": "Mozilla/5.0"
+                        "User-Agent": (
+                            "Mozilla/5.0 "
+                            "(Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) "
+                            "Chrome/131.0 Safari/537.36"
+                        ),
+                        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
                     }
                 )
 
 
                 with urlopen(
                     request,
-                    timeout=10
+                    timeout=15
                 ) as response:
 
                     image = response.read()
@@ -106,11 +142,27 @@ class Handler(BaseHTTPRequestHandler):
                     )
 
 
+                print(
+                    "COVER: получено байт:",
+                    len(image)
+                )
+
+                print(
+                    "COVER: Content-Type:",
+                    content_type
+                )
+
+
                 self.send_response(200)
 
                 self.send_header(
                     "Content-Type",
                     content_type
+                )
+
+                self.send_header(
+                    "Content-Length",
+                    str(len(image))
                 )
 
                 self.send_header(
@@ -127,26 +179,47 @@ class Handler(BaseHTTPRequestHandler):
 
                 self.wfile.write(image)
 
+
+                print(
+                    "COVER: успешно отправлено"
+                )
+
+
             except Exception as error:
 
                 print(
-                    "Cover error:",
-                    error
+                    "COVER ERROR:",
+                    repr(error)
                 )
 
                 self.send_response(500)
+
+                self.send_header(
+                    "Content-Type",
+                    "text/plain; charset=utf-8"
+                )
+
                 self.end_headers()
+
+                self.wfile.write(
+                    (
+                        "Cover error: "
+                        + str(error)
+                    ).encode("utf-8")
+                )
 
             return
 
 
         # ==================================================
-        # Получить данные от agent.py
+        # Обновление данных от agent.py
         # ==================================================
 
         if parsed.path == "/update":
 
-            params = parse_qs(parsed.query)
+            params = parse_qs(
+                parsed.query
+            )
 
             try:
 
@@ -223,7 +296,13 @@ class Handler(BaseHTTPRequestHandler):
 
             except Exception as error:
 
+                print(
+                    "UPDATE ERROR:",
+                    repr(error)
+                )
+
                 self.send_response(500)
+
                 self.end_headers()
 
                 self.wfile.write(
@@ -242,7 +321,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ==================================================
-# Запуск сервера
+# Запуск
 # ==================================================
 
 server = ThreadingHTTPServer(

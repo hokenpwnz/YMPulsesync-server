@@ -2,28 +2,12 @@ import os
 import json
 import time
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from yandex_music import Client
-
-
 PORT = int(os.environ.get("PORT", "10000"))
-
-LASTFM_API_KEY = os.environ.get(
-    "LASTFM_API_KEY",
-    ""
-).strip()
-
-LASTFM_USERNAME = os.environ.get(
-    "LASTFM_USERNAME",
-    ""
-).strip()
-
-YANDEX_TOKEN = os.environ.get(
-    "YANDEX_TOKEN",
-    ""
-).strip()
-
+LASTFM_API_KEY = os.environ.get("LASTFM_API_KEY", "").strip()
+LASTFM_USERNAME = os.environ.get("LASTFM_USERNAME", "").strip()
 LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
 
 CACHE_SECONDS = 5
@@ -32,138 +16,13 @@ cached_track = None
 cached_status = "stopped"
 last_fetch_time = 0
 
-yandex_cache = {}
-
-yandex_client = None
-
 
 def log(message):
     print(message, flush=True)
 
 
-def get_yandex_client():
-    global yandex_client
-
-    if yandex_client is not None:
-        return yandex_client
-
-    if not YANDEX_TOKEN:
-        log("YANDEX_TOKEN не задан")
-        return None
-
-    try:
-        log("Инициализация Yandex Music API...")
-
-        yandex_client = Client(
-            YANDEX_TOKEN
-        ).init()
-
-        log("Yandex Music API: подключён")
-
-        return yandex_client
-
-    except Exception as error:
-        log(
-            f"Yandex Music init ERROR: "
-            f"{type(error).__name__}: {error}"
-        )
-
-        yandex_client = None
-
-        return None
-
-
-def search_yandex_track(artist, title):
-    cache_key = (
-        f"{artist} - {title}"
-        .lower()
-        .strip()
-    )
-
-    if cache_key in yandex_cache:
-        return yandex_cache[cache_key]
-
-    client = get_yandex_client()
-
-    if client is None:
-        yandex_cache[cache_key] = None
-        return None
-
-    query = f"{artist} {title}"
-
-    try:
-        log(
-            f"YANDEX SEARCH: {query}"
-        )
-
-        result = client.search(
-            query,
-            type_="track",
-            page=0
-        )
-
-        tracks = result.tracks
-
-        if not tracks:
-            log(
-                f"YANDEX: не найдено — "
-                f"{query}"
-            )
-
-            yandex_cache[cache_key] = None
-
-            return None
-
-        best = tracks.results[0]
-
-        track_id = best.id
-
-        album_id = None
-
-        if best.albums:
-            album_id = best.albums[0].id
-
-        if not track_id or not album_id:
-            log(
-                f"YANDEX: найден трек, "
-                f"но нет ID — {query}"
-            )
-
-            yandex_cache[cache_key] = None
-
-            return None
-
-        yandex_url = (
-            "https://music.yandex.ru/album/"
-            + str(album_id)
-            + "/track/"
-            + str(track_id)
-        )
-
-        yandex_cache[cache_key] = yandex_url
-
-        log(
-            f"YANDEX: {query} -> "
-            f"{yandex_url}"
-        )
-
-        return yandex_url
-
-    except Exception as error:
-        log(
-            f"Yandex search ERROR: "
-            f"{type(error).__name__}: {error}"
-        )
-
-        yandex_cache[cache_key] = None
-
-        return None
-
-
 def fetch_lastfm_track():
-    global cached_track
-    global cached_status
-    global last_fetch_time
+    global cached_track, cached_status, last_fetch_time
 
     now = time.time()
 
@@ -173,23 +32,15 @@ def fetch_lastfm_track():
     last_fetch_time = now
 
     if not LASTFM_API_KEY:
-        log(
-            "ERROR: LASTFM_API_KEY не задан"
-        )
-
+        log("ERROR: LASTFM_API_KEY не задан")
         cached_track = None
         cached_status = "error"
-
         return cached_track, cached_status
 
     if not LASTFM_USERNAME:
-        log(
-            "ERROR: LASTFM_USERNAME не задан"
-        )
-
+        log("ERROR: LASTFM_USERNAME не задан")
         cached_track = None
         cached_status = "error"
-
         return cached_track, cached_status
 
     params = {
@@ -200,15 +51,9 @@ def fetch_lastfm_track():
         "limit": "1"
     }
 
-    url = (
-        LASTFM_API_URL
-        + "?"
-        + urllib.parse.urlencode(params)
-    )
+    url = LASTFM_API_URL + "?" + urllib.parse.urlencode(params)
 
     try:
-        import urllib.request
-
         request = urllib.request.Request(
             url,
             headers={
@@ -216,43 +61,26 @@ def fetch_lastfm_track():
             }
         )
 
-        with urllib.request.urlopen(
-            request,
-            timeout=10
-        ) as response:
-
-            raw_data = response.read().decode(
-                "utf-8"
-            )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw_data = response.read().decode("utf-8")
 
         data = json.loads(raw_data)
 
         if "error" in data:
             log(
-                f"Last.fm ERROR "
-                f"{data.get('error')}: "
+                f"Last.fm ERROR {data.get('error')}: "
                 f"{data.get('message', 'Unknown error')}"
             )
 
             cached_track = None
             cached_status = "error"
-
             return cached_track, cached_status
 
-        recent_tracks = data.get(
-            "recenttracks",
-            {}
-        )
-
-        tracks = recent_tracks.get(
-            "track",
-            []
-        )
+        recent_tracks = data.get("recenttracks", {})
+        tracks = recent_tracks.get("track", [])
 
         if not tracks:
-            log(
-                "Last.fm: recent tracks пуст"
-            )
+            log("Last.fm: recent tracks пуст")
 
             cached_track = None
             cached_status = "stopped"
@@ -264,80 +92,39 @@ def fetch_lastfm_track():
 
         lastfm_track = tracks[0]
 
-        attributes = lastfm_track.get(
-            "@attr",
-            {}
-        )
+        attributes = lastfm_track.get("@attr", {})
+        is_now_playing = attributes.get("nowplaying") == "true"
 
-        is_now_playing = (
-            attributes.get("nowplaying")
-            == "true"
-        )
+        artist_data = lastfm_track.get("artist", {})
 
-        artist_data = lastfm_track.get(
-            "artist",
-            {}
-        )
-
-        if isinstance(
-            artist_data,
-            dict
-        ):
+        if isinstance(artist_data, dict):
             artist = (
-                artist_data.get(
-                    "#text",
-                    ""
-                )
-                or artist_data.get(
-                    "name",
-                    ""
-                )
+                artist_data.get("#text", "")
+                or artist_data.get("name", "")
             )
         else:
-            artist = str(
-                artist_data
-            )
+            artist = str(artist_data)
 
         artist = artist.strip()
 
         title = str(
-            lastfm_track.get(
-                "name",
-                ""
-            )
+            lastfm_track.get("name", "")
         ).strip()
 
-        album_data = lastfm_track.get(
-            "album",
-            {}
-        )
+        album_data = lastfm_track.get("album", {})
 
-        if isinstance(
-            album_data,
-            dict
-        ):
-            album = album_data.get(
-                "#text",
-                ""
-            )
+        if isinstance(album_data, dict):
+            album = album_data.get("#text", "")
         else:
-            album = str(
-                album_data
-            )
+            album = str(album_data)
 
         album = album.strip()
 
         cover = ""
 
-        images = lastfm_track.get(
-            "image",
-            []
-        )
+        images = lastfm_track.get("image", [])
 
-        if isinstance(
-            images,
-            list
-        ):
+        if isinstance(images, list):
             preferred_sizes = [
                 "extralarge",
                 "large",
@@ -346,24 +133,14 @@ def fetch_lastfm_track():
             ]
 
             for wanted_size in preferred_sizes:
-
                 for image in images:
-
-                    if not isinstance(
-                        image,
-                        dict
-                    ):
+                    if not isinstance(image, dict):
                         continue
 
-                    if image.get(
-                        "size"
-                    ) != wanted_size:
+                    if image.get("size") != wanted_size:
                         continue
 
-                    candidate = image.get(
-                        "#text",
-                        ""
-                    )
+                    candidate = image.get("#text", "")
 
                     if candidate:
                         cover = candidate
@@ -372,19 +149,6 @@ def fetch_lastfm_track():
                 if cover:
                     break
 
-        # ==========================================
-        # Yandex Music
-        # ==========================================
-
-        yandex_url = search_yandex_track(
-            artist,
-            title
-        )
-
-        # ==========================================
-        # Текущий трек
-        # ==========================================
-
         track = {
             "artist": artist,
             "title": title,
@@ -392,61 +156,37 @@ def fetch_lastfm_track():
             "album_id": "",
             "track_id": "",
             "cover": cover,
-            "url": lastfm_track.get(
-                "url",
-                ""
-            ),
-            "yandex_url": yandex_url
+            "url": lastfm_track.get("url", "")
         }
 
         cached_track = track
-
-        cached_status = (
-            "playing"
-            if is_now_playing
-            else "stopped"
-        )
+        cached_status = "playing" if is_now_playing else "stopped"
 
         log(
-            f"LASTFM TRACK: "
-            f"{artist} - {title} "
+            f"LASTFM TRACK: {artist} - {title} "
             f"| status: {cached_status} "
-            f"| cover: "
-            f"{'yes' if cover else 'no'}"
+            f"| cover: {'yes' if cover else 'no'}"
         )
 
-        return (
-            cached_track,
-            cached_status
-        )
+        return cached_track, cached_status
 
     except Exception as error:
-
         log(
             f"Last.fm request ERROR: "
             f"{type(error).__name__}: {error}"
         )
 
         if cached_track is not None:
-            return (
-                cached_track,
-                cached_status
-            )
+            return cached_track, cached_status
 
         cached_status = "error"
 
-        return (
-            None,
-            cached_status
-        )
+        return None, cached_status
 
 
-class PulseSyncHandler(
-    BaseHTTPRequestHandler
-):
+class PulseSyncHandler(BaseHTTPRequestHandler):
 
     def send_cors_headers(self):
-
         self.send_header(
             "Access-Control-Allow-Origin",
             "*"
@@ -462,12 +202,7 @@ class PulseSyncHandler(
             "Content-Type"
         )
 
-    def send_json(
-        self,
-        data,
-        status=200
-    ):
-
+    def send_json(self, data, status=200):
         body = json.dumps(
             data,
             ensure_ascii=False
@@ -491,56 +226,35 @@ class PulseSyncHandler(
         )
 
         self.send_cors_headers()
-
         self.end_headers()
 
         return body
 
     def do_HEAD(self):
-
-        if (
-            self.path == "/"
-            or self.path == "/track"
-        ):
-
+        if self.path == "/" or self.path == "/track":
             self.send_response(200)
-
             self.send_header(
                 "Content-Type",
                 "application/json; charset=utf-8"
             )
-
             self.send_cors_headers()
-
             self.end_headers()
-
             return
 
         self.send_response(404)
-
         self.send_cors_headers()
-
         self.end_headers()
 
     def do_OPTIONS(self):
-
         self.send_response(204)
-
         self.send_cors_headers()
-
         self.end_headers()
 
     def do_GET(self):
-
-        path = urllib.parse.urlparse(
-            self.path
-        ).path
+        path = urllib.parse.urlparse(self.path).path
 
         if path == "/":
-
-            body = (
-                b"PulseSync Last.fm server is running."
-            )
+            body = b"PulseSync Last.fm server is running."
 
             self.send_response(200)
 
@@ -555,18 +269,13 @@ class PulseSyncHandler(
             )
 
             self.send_cors_headers()
-
             self.end_headers()
 
             self.wfile.write(body)
-
             return
 
         if path == "/track":
-
-            track, status = (
-                fetch_lastfm_track()
-            )
+            track, status = fetch_lastfm_track()
 
             body = self.send_json({
                 "track": track,
@@ -574,7 +283,6 @@ class PulseSyncHandler(
             })
 
             self.wfile.write(body)
-
             return
 
         body = json.dumps({
@@ -594,17 +302,11 @@ class PulseSyncHandler(
         )
 
         self.send_cors_headers()
-
         self.end_headers()
 
         self.wfile.write(body)
 
-    def log_message(
-        self,
-        format,
-        *args
-    ):
-
+    def log_message(self, format, *args):
         log(
             "%s - %s"
             % (
@@ -615,48 +317,20 @@ class PulseSyncHandler(
 
 
 def main():
+    log("========================================")
+    log("PulseSync Last.fm server starting...")
+    log("========================================")
 
-    log(
-        "========================================"
-    )
-
-    log(
-        "PulseSync Last.fm server starting..."
-    )
-
-    log(
-        "========================================"
-    )
-
-    log(
-        f"PORT: {PORT}"
-    )
+    log(f"PORT: {PORT}")
 
     log(
         "LASTFM_API_KEY: "
-        + (
-            "есть"
-            if LASTFM_API_KEY
-            else "НЕТ"
-        )
+        + ("есть" if LASTFM_API_KEY else "НЕТ")
     )
 
     log(
         "LASTFM_USERNAME: "
-        + (
-            LASTFM_USERNAME
-            if LASTFM_USERNAME
-            else "НЕТ"
-        )
-    )
-
-    log(
-        "YANDEX_TOKEN: "
-        + (
-            "есть"
-            if YANDEX_TOKEN
-            else "НЕТ"
-        )
+        + (LASTFM_USERNAME if LASTFM_USERNAME else "НЕТ")
     )
 
     server = ThreadingHTTPServer(
@@ -665,22 +339,16 @@ def main():
     )
 
     log(
-        f"PulseSync server started "
-        f"on port {PORT}"
+        f"PulseSync server started on port {PORT}"
     )
 
     try:
-
         server.serve_forever()
 
     except KeyboardInterrupt:
-
-        log(
-            "Server stopping..."
-        )
+        log("Server stopping...")
 
     finally:
-
         server.server_close()
 
 

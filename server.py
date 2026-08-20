@@ -2,8 +2,9 @@ import os
 import json
 import time
 import urllib.parse
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from yandex_music import Client
 
 
 PORT = int(os.environ.get("PORT", "10000"))
@@ -18,9 +19,12 @@ LASTFM_USERNAME = os.environ.get(
     ""
 ).strip()
 
-LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
+YANDEX_TOKEN = os.environ.get(
+    "YANDEX_TOKEN",
+    ""
+).strip()
 
-YANDEX_SEARCH_URL = "https://api.music.yandex.net/search"
+LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
 
 CACHE_SECONDS = 5
 
@@ -30,19 +34,46 @@ last_fetch_time = 0
 
 yandex_cache = {}
 
+yandex_client = None
+
 
 def log(message):
     print(message, flush=True)
 
 
+def get_yandex_client():
+    global yandex_client
+
+    if yandex_client is not None:
+        return yandex_client
+
+    if not YANDEX_TOKEN:
+        log("YANDEX_TOKEN не задан")
+        return None
+
+    try:
+        log("Инициализация Yandex Music API...")
+
+        yandex_client = Client(
+            YANDEX_TOKEN
+        ).init()
+
+        log("Yandex Music API: подключён")
+
+        return yandex_client
+
+    except Exception as error:
+        log(
+            f"Yandex Music init ERROR: "
+            f"{type(error).__name__}: {error}"
+        )
+
+        yandex_client = None
+
+        return None
+
+
 def search_yandex_track(artist, title):
-    """
-    Ищет трек в Яндекс Музыке по исполнителю и названию.
-
-    Результат кэшируется, чтобы один и тот же трек
-    не искать в Яндексе при каждом запросе /track.
-    """
-
     cache_key = (
         f"{artist} - {title}"
         .lower()
@@ -52,76 +83,50 @@ def search_yandex_track(artist, title):
     if cache_key in yandex_cache:
         return yandex_cache[cache_key]
 
+    client = get_yandex_client()
+
+    if client is None:
+        yandex_cache[cache_key] = None
+        return None
+
     query = f"{artist} {title}"
 
-    params = {
-        "text": query,
-        "page": "0",
-        "type": "track"
-    }
-
-    url = (
-        YANDEX_SEARCH_URL
-        + "?"
-        + urllib.parse.urlencode(params)
-    )
-
     try:
-        request = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "application/json"
-            }
+        log(
+            f"YANDEX SEARCH: {query}"
         )
 
-        with urllib.request.urlopen(
-            request,
-            timeout=10
-        ) as response:
-
-            raw_data = response.read().decode(
-                "utf-8"
-            )
-
-        data = json.loads(raw_data)
-
-        result = (
-            data
-            .get("result", {})
-            .get("tracks", {})
-            .get("results", [])
+        result = client.search(
+            query,
+            type_="track",
+            page=0
         )
 
-        if not result:
+        tracks = result.tracks
+
+        if not tracks:
             log(
                 f"YANDEX: не найдено — "
-                f"{artist} - {title}"
+                f"{query}"
             )
 
             yandex_cache[cache_key] = None
 
             return None
 
-        best = result[0]
+        best = tracks.results[0]
 
-        track_id = best.get("id")
+        track_id = best.id
 
         album_id = None
 
-        albums = best.get(
-            "albums",
-            []
-        )
-
-        if albums:
-            album_id = albums[0].get("id")
+        if best.albums:
+            album_id = best.albums[0].id
 
         if not track_id or not album_id:
             log(
                 f"YANDEX: найден трек, "
-                f"но нет ID — "
-                f"{artist} - {title}"
+                f"но нет ID — {query}"
             )
 
             yandex_cache[cache_key] = None
@@ -138,17 +143,19 @@ def search_yandex_track(artist, title):
         yandex_cache[cache_key] = yandex_url
 
         log(
-            f"YANDEX: {artist} - {title} "
-            f"-> {yandex_url}"
+            f"YANDEX: {query} -> "
+            f"{yandex_url}"
         )
 
         return yandex_url
 
     except Exception as error:
         log(
-            f"Yandex request ERROR: "
+            f"Yandex search ERROR: "
             f"{type(error).__name__}: {error}"
         )
+
+        yandex_cache[cache_key] = None
 
         return None
 
@@ -200,6 +207,8 @@ def fetch_lastfm_track():
     )
 
     try:
+        import urllib.request
+
         request = urllib.request.Request(
             url,
             headers={
@@ -364,7 +373,7 @@ def fetch_lastfm_track():
                     break
 
         # ==========================================
-        # Яндекс Музыка
+        # Yandex Music
         # ==========================================
 
         yandex_url = search_yandex_track(
@@ -373,7 +382,7 @@ def fetch_lastfm_track():
         )
 
         # ==========================================
-        # Формируем трек
+        # Текущий трек
         # ==========================================
 
         track = {
@@ -527,10 +536,6 @@ class PulseSyncHandler(
             self.path
         ).path
 
-        # ==========================================
-        # Главная
-        # ==========================================
-
         if path == "/":
 
             body = (
@@ -557,10 +562,6 @@ class PulseSyncHandler(
 
             return
 
-        # ==========================================
-        # Текущий трек
-        # ==========================================
-
         if path == "/track":
 
             track, status = (
@@ -575,10 +576,6 @@ class PulseSyncHandler(
             self.wfile.write(body)
 
             return
-
-        # ==========================================
-        # Не найдено
-        # ==========================================
 
         body = json.dumps({
             "error": "Not found"
@@ -649,6 +646,15 @@ def main():
         + (
             LASTFM_USERNAME
             if LASTFM_USERNAME
+            else "НЕТ"
+        )
+    )
+
+    log(
+        "YANDEX_TOKEN: "
+        + (
+            "есть"
+            if YANDEX_TOKEN
             else "НЕТ"
         )
     )

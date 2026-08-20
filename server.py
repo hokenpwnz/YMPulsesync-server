@@ -10,7 +10,7 @@ LASTFM_API_KEY = os.environ.get("LASTFM_API_KEY", "").strip()
 LASTFM_USERNAME = os.environ.get("LASTFM_USERNAME", "").strip()
 LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
 
-CACHE_SECONDS = 5
+CACHE_SECONDS = 2
 
 cached_track = None
 cached_status = "stopped"

@@ -1,832 +1,701 @@
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
-from urllib.request import Request, urlopen
-
-import json
 import os
-import threading
+import json
 import time
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from yandex_music import Client
-from yandex_music.ynison import simple
+# ============================================================
 
-
-# ==========================================================
 # Настройки
-# ==========================================================
 
-HOST = "0.0.0.0"
+# ============================================================
 
-PORT = int(
-    os.environ.get(
-        "PORT",
-        10000
-    )
-)
+PORT = int(os.environ.get("PORT", "10000"))
 
-YANDEX_TOKEN = os.environ.get(
-    "YANDEX_TOKEN"
-)
+LASTFM_API_KEY = os.environ.get("LASTFM_API_KEY", "").strip()
+LASTFM_USERNAME = os.environ.get("LASTFM_USERNAME", "").strip()
 
+LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
 
-# ==========================================================
-# Текущее состояние
-# ==========================================================
+# Как часто Render обращается к Last.fm.
 
-current_data = {
-    "track": None,
-    "status": "stopped"
+# Виджет может спрашивать /track хоть каждые 2 секунды,
+
+# но Last.fm мы не долбим каждый раз.
+
+CACHE_SECONDS = 5
+
+# ============================================================
+
+# Кэш
+
+# ============================================================
+
+cached_track = None
+cached_status = "stopped"
+last_fetch_time = 0
+
+# ============================================================
+
+# Логирование
+
+# ============================================================
+
+def log(message):
+print(message, flush=True)
+
+# ============================================================
+
+# Получение текущего трека Last.fm
+
+# ============================================================
+
+def fetch_lastfm_track():
+global cached_track
+global cached_status
+global last_fetch_time
+
+```
+now = time.time()
+
+# Используем кэш несколько секунд.
+if now - last_fetch_time < CACHE_SECONDS:
+    return cached_track, cached_status
+
+last_fetch_time = now
+
+if not LASTFM_API_KEY:
+    log("ERROR: LASTFM_API_KEY не задан")
+    cached_track = None
+    cached_status = "error"
+    return cached_track, cached_status
+
+if not LASTFM_USERNAME:
+    log("ERROR: LASTFM_USERNAME не задан")
+    cached_track = None
+    cached_status = "error"
+    return cached_track, cached_status
+
+params = {
+    "method": "user.getrecenttracks",
+    "user": LASTFM_USERNAME,
+    "api_key": LASTFM_API_KEY,
+    "format": "json",
+    "limit": "1"
 }
 
-data_lock = threading.Lock()
+url = LASTFM_API_URL + "?" + urllib.parse.urlencode(params)
 
+try:
 
-# ==========================================================
-# Yandex Music API
-# ==========================================================
-
-client = None
-
-if YANDEX_TOKEN:
-
-    try:
-
-        client = Client(
-            YANDEX_TOKEN
-        ).init()
-
-        print(
-            "Yandex Music API: OK",
-            flush=True
-        )
-
-    except Exception as error:
-
-        print(
-            "Yandex Music API ERROR:",
-            repr(error),
-            flush=True
-        )
-
-else:
-
-    print(
-        "YANDEX_TOKEN отсутствует",
-        flush=True
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "PulseSync/1.0"
+        }
     )
 
+    with urllib.request.urlopen(
+        request,
+        timeout=10
+    ) as response:
 
-# ==========================================================
-# Получение метаданных трека
-# ==========================================================
-
-def get_track_metadata(track_id):
-
-    if not client:
-        return None
-
-    if not track_id:
-        return None
-
-    try:
-
-        tracks = client.tracks(
-            [
-                str(track_id)
-            ]
+        raw_data = response.read().decode(
+            "utf-8"
         )
 
-        if not tracks:
-            return None
+    data = json.loads(raw_data)
 
-        track = tracks[0]
+    # ----------------------------------------------------
+    # Ошибка Last.fm API
+    # ----------------------------------------------------
+
+    if "error" in data:
+
+        error_code = data.get(
+            "error",
+            "unknown"
+        )
+
+        error_message = data.get(
+            "message",
+            "Unknown Last.fm error"
+        )
+
+        log(
+            f"Last.fm ERROR {error_code}: "
+            f"{error_message}"
+        )
+
+        cached_track = None
+        cached_status = "error"
+
+        return cached_track, cached_status
 
 
-        # --------------------------------------------------
-        # Исполнитель
-        # --------------------------------------------------
+    recent_tracks =
+        data.get("recenttracks", {})
 
-        artist_names = []
+    tracks =
+        recent_tracks.get("track", [])
 
-        for artist in (
-            track.artists or []
-        ):
 
-            name = getattr(
-                artist,
+    if not tracks:
+
+        log("Last.fm: recent tracks пуст")
+
+        cached_track = None
+        cached_status = "stopped"
+
+        return cached_track, cached_status
+
+
+    # Last.fm иногда может вернуть объект вместо списка.
+    if isinstance(tracks, dict):
+        tracks = [tracks]
+
+
+    lastfm_track = tracks[0]
+
+
+    # ----------------------------------------------------
+    # Now Playing
+    # ----------------------------------------------------
+
+    attributes =
+        lastfm_track.get("@attr", {})
+
+    is_now_playing =
+        attributes.get("nowplaying") == "true"
+
+
+    # ----------------------------------------------------
+    # Исполнитель
+    # ----------------------------------------------------
+
+    artist_data =
+        lastfm_track.get("artist", {})
+
+    if isinstance(artist_data, dict):
+
+        artist =
+            artist_data.get("#text", "") or \
+            artist_data.get("name", "")
+
+    else:
+
+        artist =
+            str(artist_data)
+
+
+    artist = artist.strip()
+
+
+    # ----------------------------------------------------
+    # Название
+    # ----------------------------------------------------
+
+    title =
+        str(
+            lastfm_track.get(
                 "name",
-                None
+                ""
             )
-
-            if name:
-                artist_names.append(
-                    name
-                )
+        ).strip()
 
 
-        artist = ", ".join(
-            artist_names
-        )
+    # ----------------------------------------------------
+    # Альбом
+    # ----------------------------------------------------
 
+    album_data =
+        lastfm_track.get("album", {})
 
-        # --------------------------------------------------
-        # Альбом
-        # --------------------------------------------------
+    if isinstance(album_data, dict):
 
-        album_id = ""
-
-        if track.albums:
-
-            album_id = getattr(
-                track.albums[0],
-                "id",
+        album =
+            album_data.get(
+                "#text",
                 ""
             )
 
+    else:
 
-        # --------------------------------------------------
-        # Результат
-        # --------------------------------------------------
-
-        return {
-
-            "artist": artist,
-
-            "title": getattr(
-                track,
-                "title",
-                ""
-            ),
-
-            "album_id": str(
-                album_id
-            ),
-
-            "track_id": str(
-                track_id
-            )
-        }
+        album =
+            str(album_data)
 
 
-    except Exception as error:
+    album = album.strip()
 
-        print(
-            "Metadata ERROR:",
-            repr(error),
-            flush=True
+
+    # ----------------------------------------------------
+    # Обложка
+    # ----------------------------------------------------
+
+    cover = ""
+
+    images =
+        lastfm_track.get(
+            "image",
+            []
         )
 
-        return None
+    if isinstance(images, list):
+
+        # Предпочитаем extralarge.
+        preferred_sizes = [
+            "extralarge",
+            "large",
+            "medium",
+            "small"
+        ]
+
+        for wanted_size in preferred_sizes:
+
+            for image in images:
+
+                if not isinstance(
+                    image,
+                    dict
+                ):
+                    continue
+
+                if image.get("size") == wanted_size:
+
+                    candidate =
+                        image.get(
+                            "#text",
+                            ""
+                        )
+
+                    if candidate:
+                        cover = candidate
+                        break
+
+            if cover:
+                break
 
 
-# ==========================================================
-# Получение состояния Ynison
-# ==========================================================
+    # ----------------------------------------------------
+    # URL Last.fm
+    # ----------------------------------------------------
 
-def get_ynison_state():
-
-    global current_data
-
-    if not YANDEX_TOKEN:
-        return
-
-    try:
-
-        state = simple.get_state(
-            YANDEX_TOKEN,
-            device_id="pulsesync-render"
-        )
-
-
-        # --------------------------------------------------
-        # Состояние плеера
-        # --------------------------------------------------
-
-        player_state = (
-            state.player_state
-        )
-
-        queue = (
-            player_state.player_queue
-        )
-
-        status = (
-            player_state.status
-        )
-
-
-        index = (
-            queue.current_playable_index
-        )
-
-        playable_list = (
-            queue.playable_list
-        )
-
-
-        # --------------------------------------------------
-        # Проверяем очередь
-        # --------------------------------------------------
-
-        if (
-            index < 0
-            or index >= len(playable_list)
-        ):
-
-            with data_lock:
-
-                current_data = {
-                    "track": None,
-                    "status": "stopped"
-                }
-
-            return
-
-
-        playable = (
-            playable_list[index]
-        )
-
-
-        # --------------------------------------------------
-        # Данные Ynison
-        # --------------------------------------------------
-
-        track_id = getattr(
-            playable,
-            "playable_id",
-            ""
-        )
-
-        album_id = getattr(
-            playable,
-            "album_id_optional",
-            ""
-        )
-
-        title = getattr(
-            playable,
-            "title",
-            ""
-        )
-
-        cover = getattr(
-            playable,
-            "cover_url_optional",
+    track_url =
+        lastfm_track.get(
+            "url",
             ""
         )
 
 
-        # --------------------------------------------------
-        # Обложка
-        # --------------------------------------------------
+    # ----------------------------------------------------
+    # Формируем наш объект
+    # ----------------------------------------------------
 
-        if cover:
+    track = {
 
-            cover = cover.replace(
-                "%%",
-                "200x200"
-            )
+        "artist": artist,
 
-            if not cover.startswith(
-                "http://"
-            ) and not cover.startswith(
-                "https://"
-            ):
+        "title": title,
 
-                cover = (
-                    "https://"
-                    + cover
-                )
+        "album": album,
 
+        # У Last.fm нет нам нужных
+        # Yandex album_id / track_id.
+        "album_id": "",
 
-        # --------------------------------------------------
-        # Метаданные через API
-        # --------------------------------------------------
+        "track_id": "",
 
-        metadata = get_track_metadata(
-            track_id
-        )
+        "cover": cover,
+
+        "url": track_url
+    }
 
 
-        artist = ""
+    cached_track = track
+
+    cached_status =
+        "playing" if is_now_playing else "stopped"
 
 
-        if metadata:
-
-            artist = metadata.get(
-                "artist",
-                ""
-            )
-
-
-            if metadata.get(
-                "title"
-            ):
-
-                title = metadata[
-                    "title"
-                ]
-
-
-            if metadata.get(
-                "album_id"
-            ):
-
-                album_id = metadata[
-                    "album_id"
-                ]
-
-
-        # --------------------------------------------------
-        # Статус
-        # --------------------------------------------------
-
-        paused = getattr(
-            status,
-            "paused",
-            False
-        )
-
-
-        playback_status = (
-            "paused"
-            if paused
-            else "playing"
-        )
-
-
-        # --------------------------------------------------
-        # URL Яндекс Музыки
-        # --------------------------------------------------
-
-        track_url = ""
-
-
-        if album_id and track_id:
-
-            track_url = (
-                "https://music.yandex.ru/album/"
-                + str(album_id)
-                + "/track/"
-                + str(track_id)
-            )
-
-
-        # --------------------------------------------------
-        # Формируем состояние
-        # --------------------------------------------------
-
-        new_data = {
-
-            "track": {
-
-                "artist": artist,
-
-                "title": title,
-
-                "album_id": str(
-                    album_id
-                ),
-
-                "track_id": str(
-                    track_id
-                ),
-
-                "cover": cover,
-
-                "url": track_url
-            },
-
-            "status": playback_status
-        }
-
-
-        # --------------------------------------------------
-        # Сохраняем
-        # --------------------------------------------------
-
-        with data_lock:
-
-            current_data = new_data
-
-
-        print(
-            "TRACK:",
-            artist or "[без исполнителя]",
-            "-",
-            title,
-            "| album:",
-            album_id,
-            "| track:",
-            track_id,
-            flush=True
-        )
-
-
-    except Exception as error:
-
-        print(
-            "Ynison ERROR:",
-            repr(error),
-            flush=True
-        )
-
-
-# ==========================================================
-# Фоновый Ynison
-# ==========================================================
-
-def ynison_loop():
-
-    print(
-        "Ynison поток запущен",
-        flush=True
+    log(
+        "LASTFM TRACK: "
+        f"{artist} - {title} "
+        f"| status: {cached_status} "
+        f"| cover: {'yes' if cover else 'no'}"
     )
 
 
-    while True:
-
-        try:
-
-            get_ynison_state()
-
-        except Exception as error:
-
-            print(
-                "Ynison LOOP ERROR:",
-                repr(error),
-                flush=True
-            )
+    return cached_track, cached_status
 
 
-        time.sleep(
-            2
+except Exception as error:
+
+    log(
+        "Last.fm request ERROR: "
+        f"{type(error).__name__}: {error}"
+    )
+
+    # Не уничтожаем последний нормальный трек
+    # из-за временного сбоя Last.fm.
+    if cached_track is not None:
+        return (
+            cached_track,
+            cached_status
         )
 
+    cached_status = "error"
 
-# ==========================================================
-# HTTP Handler
-# ==========================================================
+    return (
+        None,
+        cached_status
+    )
+```
 
-class Handler(
-    BaseHTTPRequestHandler
+# ============================================================
+
+# HTTP
+
+# ============================================================
+
+class PulseSyncHandler(BaseHTTPRequestHandler):
+
+```
+# --------------------------------------------------------
+# CORS
+# --------------------------------------------------------
+
+def send_cors_headers(self):
+
+    self.send_header(
+        "Access-Control-Allow-Origin",
+        "*"
+    )
+
+    self.send_header(
+        "Access-Control-Allow-Methods",
+        "GET, HEAD, OPTIONS"
+    )
+
+    self.send_header(
+        "Access-Control-Allow-Headers",
+        "Content-Type"
+    )
+
+
+# --------------------------------------------------------
+# Ответ JSON
+# --------------------------------------------------------
+
+def send_json(
+    self,
+    data,
+    status=200
 ):
 
-
-    # ------------------------------------------------------
-    # Логи
-    # ------------------------------------------------------
-
-    def log_message(
-        self,
-        format,
-        *args
-    ):
-
-        print(
-            format % args,
-            flush=True
-        )
+    body =
+        json.dumps(
+            data,
+            ensure_ascii=False
+        ).encode("utf-8")
 
 
-    # ------------------------------------------------------
-    # HEAD
-    # ------------------------------------------------------
+    self.send_response(status)
 
-    def do_HEAD(self):
+    self.send_header(
+        "Content-Type",
+        "application/json; charset=utf-8"
+    )
 
-        self.send_response(
-            200
-        )
+    self.send_header(
+        "Content-Length",
+        str(len(body))
+    )
+
+    self.send_header(
+        "Cache-Control",
+        "no-store, no-cache, must-revalidate"
+    )
+
+    self.send_cors_headers()
+
+    self.end_headers()
+
+    return body
+
+
+# --------------------------------------------------------
+# HEAD
+# --------------------------------------------------------
+
+def do_HEAD(self):
+
+    if self.path == "/":
+
+        self.send_response(200)
 
         self.send_header(
             "Content-Type",
-            "text/plain"
+            "text/plain; charset=utf-8"
         )
+
+        self.send_cors_headers()
 
         self.end_headers()
 
+        return
 
-    # ------------------------------------------------------
-    # GET
-    # ------------------------------------------------------
 
-    def do_GET(self):
+    if self.path == "/track":
 
-        parsed = urlparse(
+        self.send_response(200)
+
+        self.send_header(
+            "Content-Type",
+            "application/json; charset=utf-8"
+        )
+
+        self.send_header(
+            "Cache-Control",
+            "no-store"
+        )
+
+        self.send_cors_headers()
+
+        self.end_headers()
+
+        return
+
+
+    self.send_response(404)
+
+    self.send_cors_headers()
+
+    self.end_headers()
+
+
+# --------------------------------------------------------
+# OPTIONS
+# --------------------------------------------------------
+
+def do_OPTIONS(self):
+
+    self.send_response(204)
+
+    self.send_cors_headers()
+
+    self.end_headers()
+
+
+# --------------------------------------------------------
+# GET
+# --------------------------------------------------------
+
+def do_GET(self):
+
+    path =
+        urllib.parse.urlparse(
             self.path
+        ).path
+
+
+    # ----------------------------------------------------
+    # Главная
+    # ----------------------------------------------------
+
+    if path == "/":
+
+        body =
+            b"PulseSync Last.fm server is running."
+
+
+        self.send_response(200)
+
+        self.send_header(
+            "Content-Type",
+            "text/plain; charset=utf-8"
         )
 
-
-        # ==================================================
-        # /track
-        # ==================================================
-
-        if parsed.path == "/track":
-
-            with data_lock:
-
-                response = json.loads(
-                    json.dumps(
-                        current_data,
-                        ensure_ascii=False
-                    )
-                )
-
-
-            self.send_response(
-                200
-            )
-
-            self.send_header(
-                "Content-Type",
-                "application/json; charset=utf-8"
-            )
-
-            self.send_header(
-                "Cache-Control",
-                "no-store"
-            )
-
-            self.send_header(
-                "Access-Control-Allow-Origin",
-                "*"
-            )
-
-            self.end_headers()
-
-
-            self.wfile.write(
-                json.dumps(
-                    response,
-                    ensure_ascii=False
-                ).encode(
-                    "utf-8"
-                )
-            )
-
-            return
-
-
-        # ==================================================
-        # /cover
-        #
-        # Twitch обращается сюда.
-        #
-        # Render сам скачивает картинку
-        # с avatars.yandex.net и отдаёт её Twitch.
-        # ==================================================
-
-        if parsed.path == "/cover":
-
-            with data_lock:
-
-                track = (
-                    current_data.get(
-                        "track"
-                    )
-                )
-
-
-            if not track:
-
-                self.send_response(
-                    404
-                )
-
-                self.end_headers()
-
-                return
-
-
-            cover_url = (
-                track.get(
-                    "cover",
-                    ""
-                )
-            )
-
-
-            if not cover_url:
-
-                self.send_response(
-                    404
-                )
-
-                self.end_headers()
-
-                return
-
-
-            try:
-
-                print(
-                    "Cover proxy:",
-                    cover_url,
-                    flush=True
-                )
-
-
-                request = Request(
-
-                    cover_url,
-
-                    headers={
-                        "User-Agent":
-                            "Mozilla/5.0 "
-                            "(Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 "
-                            "Chrome/151.0 Safari/537.36"
-                    }
-                )
-
-
-                with urlopen(
-                    request,
-                    timeout=10
-                ) as response:
-
-                    image_data = (
-                        response.read()
-                    )
-
-                    content_type = (
-                        response.headers.get(
-                            "Content-Type",
-                            "image/jpeg"
-                        )
-                    )
-
-
-                self.send_response(
-                    200
-                )
-
-                self.send_header(
-                    "Content-Type",
-                    content_type
-                )
-
-                self.send_header(
-                    "Content-Length",
-                    str(
-                        len(image_data)
-                    )
-                )
-
-                self.send_header(
-                    "Cache-Control",
-                    "no-store"
-                )
-
-                self.send_header(
-                    "Access-Control-Allow-Origin",
-                    "*"
-                )
-
-                self.end_headers()
-
-
-                self.wfile.write(
-                    image_data
-                )
-
-
-                print(
-                    "Cover proxy: OK",
-                    len(image_data),
-                    "bytes",
-                    flush=True
-                )
-
-
-            except Exception as error:
-
-                print(
-                    "Cover proxy ERROR:",
-                    repr(error),
-                    flush=True
-                )
-
-
-                self.send_response(
-                    502
-                )
-
-                self.send_header(
-                    "Content-Type",
-                    "text/plain; charset=utf-8"
-                )
-
-                self.end_headers()
-
-
-                self.wfile.write(
-                    b"Cover proxy error"
-                )
-
-
-            return
-
-
-        # ==================================================
-        # /health
-        # ==================================================
-
-        if parsed.path == "/health":
-
-            self.send_response(
-                200
-            )
-
-            self.send_header(
-                "Content-Type",
-                "text/plain; charset=utf-8"
-            )
-
-            self.end_headers()
-
-
-            self.wfile.write(
-                b"OK"
-            )
-
-            return
-
-
-        # ==================================================
-        # 404
-        # ==================================================
-
-        self.send_response(
-            404
+        self.send_header(
+            "Content-Length",
+            str(len(body))
         )
+
+        self.send_cors_headers()
 
         self.end_headers()
 
+        self.wfile.write(body)
 
-# ==========================================================
+        return
+
+
+    # ----------------------------------------------------
+    # Текущий трек
+    # ----------------------------------------------------
+
+    if path == "/track":
+
+        track, status =
+            fetch_lastfm_track()
+
+
+        response = {
+
+            "track": track,
+
+            "status": status
+        }
+
+
+        body =
+            self.send_json(
+                response
+            )
+
+
+        self.wfile.write(body)
+
+        return
+
+
+    # ----------------------------------------------------
+    # 404
+    # ----------------------------------------------------
+
+    body =
+        json.dumps(
+            {
+                "error": "Not found"
+            }
+        ).encode("utf-8")
+
+
+    self.send_response(404)
+
+    self.send_header(
+        "Content-Type",
+        "application/json"
+    )
+
+    self.send_header(
+        "Content-Length",
+        str(len(body))
+    )
+
+    self.send_cors_headers()
+
+    self.end_headers()
+
+    self.wfile.write(body)
+
+
+# --------------------------------------------------------
+# Отключаем шумные стандартные логи
+# --------------------------------------------------------
+
+def log_message(
+    self,
+    format,
+    *args
+):
+
+    log(
+        "%s - %s"
+        % (
+            self.address_string(),
+            format % args
+        )
+    )
+```
+
+# ============================================================
+
 # Запуск
-# ==========================================================
 
-print(
-    "PulseSync server starting...",
-    flush=True
+# ============================================================
+
+def main():
+
+```
+log("")
+log("========================================")
+log("PulseSync Last.fm server starting...")
+log("========================================")
+
+log(
+    f"PORT: {PORT}"
 )
 
-print(
-    "PORT:",
-    PORT,
-    flush=True
+log(
+    "LASTFM_API_KEY: "
+    + (
+        "есть"
+        if LASTFM_API_KEY
+        else "НЕТ"
+    )
 )
 
-print(
-    "YANDEX_TOKEN:",
-    "есть"
-    if YANDEX_TOKEN
-    else "НЕТ",
-    flush=True
+log(
+    "LASTFM_USERNAME: "
+    + (
+        LASTFM_USERNAME
+        if LASTFM_USERNAME
+        else "НЕТ"
+    )
 )
 
+log("")
 
-# ==========================================================
-# Запускаем Ynison
-# ==========================================================
 
-if YANDEX_TOKEN:
+if not LASTFM_API_KEY:
 
-    threading.Thread(
-        target=ynison_loop,
-        daemon=True
-    ).start()
-
-else:
-
-    print(
-        "ERROR: YANDEX_TOKEN отсутствует",
-        flush=True
+    log(
+        "WARNING: "
+        "LASTFM_API_KEY не установлен."
     )
 
 
-# ==========================================================
-# HTTP сервер
-# ==========================================================
+if not LASTFM_USERNAME:
 
-server = ThreadingHTTPServer(
-    (
-        HOST,
-        PORT
-    ),
-    Handler
+    log(
+        "WARNING: "
+        "LASTFM_USERNAME не установлен."
+    )
+
+
+server =
+    ThreadingHTTPServer(
+        ("0.0.0.0", PORT),
+        PulseSyncHandler
+    )
+
+
+log(
+    f"PulseSync server started on port {PORT}"
 )
 
-
-print(
-    "PulseSync server started on port",
-    PORT,
-    flush=True
+log(
+    "Source: Last.fm user.getrecenttracks"
 )
 
+log("")
 
-server.serve_forever()
+
+try:
+
+    server.serve_forever()
+
+except KeyboardInterrupt:
+
+    log(
+        "Server stopping..."
+    )
+
+finally:
+
+    server.server_close()
+```
+
+if **name** == "**main**":
+main()
